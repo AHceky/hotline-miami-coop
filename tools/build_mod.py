@@ -27,7 +27,7 @@ SCRIPTS = ['scrCoopInit', 'scrCoopKeyDirect', 'scrCoopSkin', 'scrCoopSkin1', 'sc
            'scrCoopDoors', 'scrCoopDialog', 'scrCoopSkinName', 'scrCoopSaveSkin', 'scrCoopSkinMenu',
            'scrCoopSkinMenuDraw', 'scrCoopDebugTalk', 'scrCoopSpawned', 'scrCoopDebugSpawn',
            'scrCoopWeaponTaken', 'scrCoopWeaponThrown', 'scrCoopReadCfg', 'scrCoopSaveCfg', 'scrCoopRevive',
-           'scrCoopReviveCheck', 'scrCoopShotInit', 'scrCoopShotStep']
+           'scrCoopReviveCheck', 'scrCoopShotInit', 'scrCoopShotStep', 'scrCoopPeers']
 
 # HM1 player sprite -> HM2 Beard ("Nicke") sprite. Beard has fewer animations than Jacket, so
 # guns share the M16/shotgun/M60 sets and every melee weapon uses the knife set.

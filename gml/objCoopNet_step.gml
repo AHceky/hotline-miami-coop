@@ -4,6 +4,8 @@
 // 13 maskon  14 maskindex  15 skin (0 Jacket, 1 Beard)  16 frames spent on this floor
 // 17 sitting in the level-end car (waiting or driving off)
 external_call(global.__net_poll)
+scrCoopPeers()
+if global.coop_nconn>0 coop_everconn=1
 
 // reliable events from the partner: 1 = enemy killed (room, uid), 2 = left room (from, to)
 var et,ea,eb,ec,ed,c;
@@ -117,18 +119,23 @@ scrCoopDoors()
 scrCoopDialog()
 scrCoopSkinMenu()
 scrCoopReviveCheck()
-// weapons on the floor get random types on each side: once both are on this floor, the side with
-// rank 1 sends its list and the other copies it (event 15)
-if coop_rt<5 coop_wsent=-1
-if global.coop_together=1 and coop_wsent!=room and external_call(global.__net_rank)=1 {
-with objWeapon external_call(global.__net_event4,15,room,floor(max(0,x))*10000+floor(max(0,y)),image_index,ammo)
-coop_wsent=room
+// weapons on the floor get random types in each game: whenever another player arrives on this floor,
+// the most senior player here (wins every tie-break) sends their list and the others copy it (event 15)
+var s;
+if coop_rt<5 coop_wn=0
+if global.coop_ninroom>coop_wn {
+global.coop_k=1
+for (s=0;s<global.coop_npeers;s+=1) {if global.coop_pin[s] and global.coop_prank[s]=0 global.coop_k=0}
+if global.coop_k=1 with objWeapon external_call(global.__net_event4,15,room,floor(max(0,x))*10000+floor(max(0,y)),image_index,ammo)
 }
+coop_wn=global.coop_ninroom
 // our bullets: the partner sees them fly (event 12)
 with objBullet {if !variable_local_exists("coop_seen") {coop_seen=1 external_call(global.__net_event4,12,room,floor(max(0,x))*10000+floor(max(0,y)),direction,speed)}}
-// dead and waiting to be revived: the partner simulates our enemies meanwhile
-if !instance_exists(objPlayer) and instance_exists(objPlayerDead) and global.coop_together=1 and external_call(global.__net_get,0)=1 {
-if coop_t mod 20=0 scrCoopWithFamily(scrCoopGiveOne)
+// dead and waiting to be revived: a player alive on this floor simulates our enemies meanwhile
+if !instance_exists(objPlayer) and instance_exists(objPlayerDead) and global.coop_ninroom>0 and coop_t mod 20=0 {
+global.coop_gslot=-1
+for (s=0;s<global.coop_npeers;s+=1) {if global.coop_pin[s] global.coop_gslot=s}
+scrCoopWithFamily(scrCoopGiveOne)
 }
 // beat the floor's boss: tell the partner (event 14)
 if instance_exists(objBoss) coop_bossroom=room
@@ -197,8 +204,7 @@ external_call(global.__net_set,17,global.coop_incar>0 or global.coop_cargo=1)
 external_call(global.__net_send)
 
 // show the status line for 4 s whenever the link state changes
-var age,cs;
-age=external_call(global.__net_age)
-if age<0 cs=0 else if age>3000 cs=2 else cs=1
+var cs;
+cs=global.coop_nconn
 if cs!=laststate {laststate=cs statustimer=240}
 if statustimer>0 statustimer-=1

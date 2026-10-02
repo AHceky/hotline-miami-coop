@@ -31,15 +31,15 @@ if keyboard_check_pressed(ord("B")) and instance_exists(objPlayer) and instance_
 if keyboard_check_pressed(ord("J")) {external_call(global.__net_event,96,0,0,0) {if !variable_global_exists("combo") {scrInitScore() scrResetScore()}} global.done=1 room_goto(rmTrainstationEntrance)}
 if keyboard_check_pressed(ord("M")) {external_call(global.__net_event,95,0,0,0) scrCoopDebugSpawn()}
 if keyboard_check_pressed(ord("K")) and instance_exists(objPlayer) and instance_exists(objWeapon) {global.dbg_t=instance_nearest(objPlayer.x,objPlayer.y,objWeapon) with objPlayer {x=global.dbg_t.x y=global.dbg_t.y scrPlayerPickUp()}}
-if keyboard_check_pressed(ord("X")) and instance_exists(objPlayer) and instance_exists(objEnemy) {global.my_id=instance_nearest(objPlayer.x,objPlayer.y,objEnemy) scrPlayerDieMelee()}
-if keyboard_check_pressed(ord("G")) and instance_exists(objPlayer) {with objPlayer {x=external_call(global.__net_get,2)+10 y=external_call(global.__net_get,3)}}
-if keyboard_check_pressed(vk_f6) scrCoopWithFamily(scrCoopGiveOne)
+if keyboard_check_pressed(ord("X")) and instance_exists(objPlayer) {with objPlayer {global.coop_k=instance_create(x,y,objPlayerDead) global.coop_k.sprite_index=sprPBackBlunt global.coop_k.image_angle=dir instance_destroy()}}
+if keyboard_check_pressed(ord("G")) and instance_exists(objPlayer) {with objPlayer {x=global.coop_px[0]+10 y=global.coop_py[0]}}
+if keyboard_check_pressed(vk_f6) {global.coop_gslot=-1 global.coop_k=0 repeat (global.coop_npeers) {if global.coop_pin[global.coop_k] global.coop_gslot=global.coop_k global.coop_k+=1} scrCoopWithFamily(scrCoopGiveOne)}
 if keyboard_check_pressed(vk_f12) {external_call(global.__net_event,98,0,0,0) {if !variable_global_exists("combo") {scrInitScore() scrResetScore()} room_goto(rmTrainstationDownstairs)}}
 if keyboard_check_pressed(vk_f11) {external_call(global.__net_event,99,0,0,0) {if !variable_global_exists("combo") {scrInitScore() scrResetScore()} room_goto(rmApartment1Entrance)}}
 }
 // state dump for automated tests: coop_dbg.txt next to the exe, twice a second
 if coop_t mod 30=0 {
-global.coop_dbgs="room "+string(room)+" player "+string(instance_exists(objPlayer))+" dead "+string(instance_number(objPlayerDead))+" enemies "+string(instance_number(objEnemy))+" weapons "+string(instance_number(objWeapon))+" flying "+string(instance_number(objWeaponThrow))+" shots "+string(instance_number(objCoopShot))+" partner "+string(external_call(global.__net_get,0))+" skin "+string(global.coop_skin)+" name "+global.coop_name+" peer "+global.coop_peerstr
+global.coop_dbgs="room "+string(room)+" player "+string(instance_exists(objPlayer))+" dead "+string(instance_number(objPlayerDead))+" enemies "+string(instance_number(objEnemy))+" weapons "+string(instance_number(objWeapon))+" flying "+string(instance_number(objWeaponThrow))+" shots "+string(instance_number(objCoopShot))+" np "+string(global.coop_npeers)+" ages "+string(global.coop_page[0])+","+string(global.coop_page[1])+","+string(global.coop_page[2])+" st "+string(global.coop_pst[0])+" players "+string(global.coop_nconn)+" here "+string(global.coop_ninroom)+" ["+global.coop_nnames+"]"+" skin "+string(global.coop_skin)+" name "+global.coop_name+" peer "+global.coop_peerstr
 with objWeapon global.coop_dbgs+=" W"+string(image_index)+"@"+string(round(x))+","+string(round(y))
 if instance_exists(objPlayer) global.coop_dbgs+=" P@"+string(round(objPlayer.x))+","+string(round(objPlayer.y))+" "+sprite_get_name(objPlayer.sprite_index)
 global.coop_k=file_text_open_write(working_directory+"\coop_dbg.txt")

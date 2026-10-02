@@ -1,8 +1,14 @@
-// (objCoopNet step) the partner lies dead on our floor: stand on the body and press E to revive them
+// (objCoopNet step) a player lies dead on our floor: stand on the body and press E to revive them.
+// coop_canrevive = their slot + 1 (0 = nobody to revive here)
 coop_canrevive=0
 if !instance_exists(objPlayer) exit
-if external_call(global.__net_age)<0 or external_call(global.__net_age)>3000 exit
-if external_call(global.__net_get,0)!=2 or external_call(global.__net_get,1)!=room exit
-if point_distance(objPlayer.x,objPlayer.y,external_call(global.__net_get,2),external_call(global.__net_get,3))>28 exit
-coop_canrevive=1
-if global.coop_focus=1 and keyboard_check_pressed(ord("E")) external_call(global.__net_event,13,room,0,0)
+var s;
+for (s=0;s<global.coop_npeers;s+=1) {
+if global.coop_pok[s] and global.coop_pst[s]=2 and global.coop_proom[s]=room {
+if point_distance(objPlayer.x,objPlayer.y,global.coop_px[s],global.coop_py[s])<=28 {
+coop_canrevive=s+1
+if global.coop_focus=1 and keyboard_check_pressed(ord("E")) external_call(global.__net_event4_to,s,13,room,0,0,0)
+exit
+}
+}
+}

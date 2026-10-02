@@ -140,14 +140,15 @@ def configure(cfg_path, has_beard):
         if name:
             break
         print('Только латинские буквы и цифры.')
-    print('IP напарника: в Radmin VPN это адрес вида 26.x.x.x рядом с его ником.')
+    print('IP других игроков (до трёх, через запятую): в Radmin VPN это адрес вида 26.x.x.x рядом с ником.')
+    print('Достаточно вписать одного - остальных игра найдёт сама.')
     while True:
-        peer = ask('IP напарника', old.get('peer', '') or '26.')
-        if re.fullmatch(r'[\w.\-]+(:\d+)?', peer) and peer not in ('26.', ''):
+        peer = ask('IP других игроков', old.get('peer', '') or '26.')
+        parts = [x.strip() for x in re.split(r'[,; ]+', peer) if x.strip()]
+        if parts and all(re.fullmatch(r'[\w.\-]+(:\d+)?', x) and x != '26.' for x in parts):
             break
-        print('Не похоже на адрес, попробуй ещё раз (например 26.12.34.56).')
-    if ':' not in peer:
-        peer += ':7777'
+        print('Не похоже на адрес, попробуй ещё раз (например 26.12.34.56 или 26.1.1.1, 26.2.2.2).')
+    peer = ','.join(x if ':' in x else x + ':7777' for x in parts[:3])
     skin, chance = 'jacket', old.get('beard_chance', '50')
     if has_beard:
         skins = ['jacket', 'beard', 'richter', 'corey', 'jake', 'son', 'writer', 'pardo', 'henchman', 'random']

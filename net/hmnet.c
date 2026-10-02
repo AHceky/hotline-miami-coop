@@ -1,17 +1,24 @@
-// hmnet.dll - UDP link for the Hotline Miami co-op mod.
+// hmnet.dll - UDP link for the Hotline Miami co-op mod (up to 4 players: you + 3 peers).
 // Called from GameMaker 7 GML via external_define(..., dll_cdecl, ...).
 //
-// Two channels share one packet sent every step:
+// Every player talks to every other player directly (full mesh). To each peer, one packet per step:
 //  * state:  NFIELDS doubles, newest packet wins (sequence numbers drop late datagrams);
-//  * events: reliable, ordered (kills, floor transitions). Each packet carries the oldest
-//            un-acked events; the receiver acks the highest in-order id it has delivered.
+//  * events: reliable, ordered per peer (kills, floor transitions, pickups...). Each packet carries
+//            the oldest events that peer has not acknowledged; the receiver acks the highest in-order
+//            id it has delivered.
+// Enemy state goes in separate packets (the enemies this player simulates). Every ~2 s each peer is
+// told the addresses of the other peers we know, so a player only has to know one of the others.
+//
+// GML picks the peer it reads with net_sel(slot); net_get / net_age / net_peer_name / net_rank then
+// refer to that peer. Events carry the sender's slot (net_ev_get(5)).
 //
 // Config: hmcoop.txt next to the exe (read by net_start):
-//   port=7777            local UDP port
-//   peer=1.2.3.4:7777    partner address; empty = wait for the partner to talk first
-//   name=P1              shown above your ghost on the other screen
-//   skin=jacket          jacket | beard | richter | corey | jake | son | writer | pardo | henchman | random
-//   beard_chance=50      percent, for skin=random
+//   port=7777                       local UDP port
+//   peer=26.1.2.3:7777,26.4.5.6     peers' addresses (comma separated; one is enough, the rest are
+//                                   learned); empty = wait for others to talk first
+//   name=P1                         shown above your ghost on the other screens
+//   skin=jacket                     jacket | beard | richter | corey | jake | son | writer | pardo | henchman | random
+//   beard_chance=50                 percent, for skin=random
 
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -23,9 +30,11 @@
 
 #define EXPORT __declspec(dllexport) double __cdecl
 #define NFIELDS 32
-#define MAGIC 0x34434D48u /* "HMC4": protocol 4 (carries the mod version, kept from now on) */
+#define MAGIC 0x34434D48u  /* "HMC4": state + events (carries the mod version, kept from now on) */
 #define EMAGIC 0x34454D48u /* "HME4": enemy state packet */
-#define MOD_VERSION 60   /* v0.6: compared with the partner's, a difference is reported */
+#define PMAGIC 0x34504D48u /* "HMP4": addresses of the other peers we know */
+#define MOD_VERSION 70     /* v0.7: compared with the peers', a difference is reported */
+#define MAXP 3             /* peers (players besides us) */
 #define ES_MAX 48
 #define EV_PER_PACKET 8
 #define EV_QUEUE 1024
@@ -40,15 +49,16 @@ typedef struct {
 typedef struct {
     unsigned int magic;
     unsigned int modver;   // MOD_VERSION of the sender
-    unsigned int session;  // random per game launch: a restarted partner resets the event stream
+    unsigned int session;  // random per game launch: a restarted peer resets its event streams
     unsigned int seq;
     char name[16];
     double f[NFIELDS];
-    unsigned int ack;  // highest in-order event id we have delivered from the peer
+    unsigned int ack;  // highest in-order event id we have delivered from this peer
     unsigned int nev;
     Event ev[EV_PER_PACKET];
 } Packet;
-// Enemy state: the enemies this side simulates ("owns"), sent ~30 times a second.
+
+// Enemy state: the enemies the sender simulates ("owns"), sent ~30 times a second.
 typedef struct {
     int uid;
     short obj, spr;
@@ -63,42 +73,65 @@ typedef struct {
     unsigned int count;
     EState e[ES_MAX];
 } EPacket;
+
+typedef struct {
+    unsigned int magic;
+    unsigned int session;
+    unsigned int count;
+    struct { unsigned int ip; unsigned short port; } a[MAXP];
+} PPacket;
 #pragma pack(pop)
 
-static EPacket es_out, es_in;
-static unsigned int es_last_seq = 0;
-static DWORD es_rx_time = 0;
-static int es_have = 0;
+typedef struct {
+    int used;                 // slot holds an address (configured or learned)
+    struct sockaddr_in addr;
+    unsigned int session;     // peer's session, 0 = not heard yet
+    Packet in;
+    unsigned int last_seq;
+    int have_in;
+    DWORD last_rx;
+    char name[17];
+    // our events to this peer
+    Event outq[EV_QUEUE];
+    unsigned int out_first, out_next;
+    unsigned int rx_next;     // next event id expected from this peer
+    // enemy state from this peer
+    EPacket es_in;
+    unsigned int es_last_seq;
+    DWORD es_rx_time;
+    int es_have;
+    int modver;               // a different mod version seen from this address (0 = older than v0.6)
+    DWORD last_old;
+    unsigned long n_rx, n_old;
+} Peer;
+
+typedef struct {
+    Event e;
+    int slot;
+    unsigned int session;
+} InEvent;
 
 static SOCKET sock = INVALID_SOCKET;
-static struct sockaddr_in peer;
-static int have_peer = 0;
-static Packet out, in;
-static unsigned int last_seq = 0;
-static int have_in = 0;
-static DWORD last_rx = 0;
+static Peer peers[MAXP];
+static int sel = 0;
+static Packet out;
+static EPacket es_out;
+static InEvent inq[EV_QUEUE];
+static int in_head = 0, in_count = 0;
 static char status[256] = "not started";
-static char peer_name[17] = "";
-static unsigned long n_tx = 0, n_rx = 0, n_err = 0, n_bad = 0, n_old = 0;
-static int last_err = 0;
-static DWORD last_log = 0;
+static unsigned long n_tx = 0, n_err = 0, n_bad = 0, n_ev_tx = 0, n_ev_rx = 0;
+static int last_err = 0, my_port = 7777;
+static DWORD last_log = 0, last_gossip = 0;
 static char logpath[300] = "hmnet_log.txt";
 static double skin_pref = 0, beard_chance = 50;
 static double tick = 0;
-static int peer_modver = 0;
-static DWORD last_old = 0;              // when the last packet of another mod version arrived
-#define OLD_RECENT (n_old && GetTickCount() - last_old < 3000)            // version of a partner we could not talk to (0 = older than v0.6)
 static char local_addrs[200] = "";
+static unsigned int local_ip[16];
+static int n_local_ip = 0;
 
-// outgoing events: ring of ids (out_next_id - out_count .. out_next_id - 1)
-static Event outq[EV_QUEUE];
-static unsigned int out_first = 1, out_next = 1;  // ids
-// incoming delivered-but-unread events
-static Event inq[EV_QUEUE];
-static int in_head = 0, in_count = 0;
-static unsigned int rx_next = 1;  // next event id expected from the peer
-static unsigned long n_ev_tx = 0, n_ev_rx = 0;
-static unsigned int peer_session = 0;
+#define OLD_RECENT(p) ((p)->n_old && GetTickCount() - (p)->last_old < 3000)
+
+static int alive(const Peer *p) { return p->used && p->have_in && GetTickCount() - p->last_rx < 3000; }
 
 static void write_log(void) {
     DWORD now = GetTickCount();
@@ -107,19 +140,23 @@ static void write_log(void) {
     FILE *f = fopen(logpath, "w");
     if (!f) return;
     fprintf(f, "status: %s\n", status);
-    if (have_peer) fprintf(f, "peer: %s:%d\n", inet_ntoa(peer.sin_addr), ntohs(peer.sin_port));
-    else fprintf(f, "peer: not known yet\n");
-    fprintf(f, "sent: %lu  received: %lu  bad packets: %lu  other-version: %lu  socket errors: %lu (last %d)\n",
-            n_tx, n_rx, n_bad, n_old, n_err, last_err);
-    fprintf(f, "events sent: %lu (unacked %u)  events received: %lu\n", n_ev_tx, out_next - out_first, n_ev_rx);
-    fprintf(f, "partner: %s, last packet %ld ms ago\n", peer_name[0] ? peer_name : "-", have_in ? (long)(now - last_rx) : -1L);
-    if (n_old) fprintf(f, "WARNING: partner runs a different mod version - reinstall the same version on both PCs\n");
+    fprintf(f, "sent: %lu  bad packets: %lu  socket errors: %lu (last %d)  events sent: %lu received: %lu\n",
+            n_tx, n_bad, n_err, last_err, n_ev_tx, n_ev_rx);
+    for (int i = 0; i < MAXP; i++) {
+        Peer *p = &peers[i];
+        if (!p->used) continue;
+        fprintf(f, "peer %d: %s:%d  name %s  received %lu  last packet %ld ms ago  unacked events %u%s\n", i,
+                inet_ntoa(p->addr.sin_addr), ntohs(p->addr.sin_port), p->name[0] ? p->name : "-", p->n_rx,
+                p->have_in ? (long)(now - p->last_rx) : -1L, p->out_next - p->out_first,
+                p->n_old ? "  WARNING: different mod version - install the same version on every PC" : "");
+    }
     fclose(f);
 }
 
 static void trim(char *s) {
     size_t n = strlen(s);
     while (n && (s[n - 1] == '\r' || s[n - 1] == '\n' || s[n - 1] == ' ')) s[--n] = 0;
+    while (s[0] == ' ') memmove(s, s + 1, strlen(s));
 }
 
 static int resolve(const char *hostport, struct sockaddr_in *sa) {
@@ -127,6 +164,8 @@ static int resolve(const char *hostport, struct sockaddr_in *sa) {
     int port = 7777;
     strncpy(host, hostport, sizeof host - 1);
     host[sizeof host - 1] = 0;
+    trim(host);
+    if (!host[0]) return 0;
     char *c = strrchr(host, ':');
     if (c) { *c = 0; port = atoi(c + 1); }
     struct addrinfo hints = {0}, *res = NULL;
@@ -139,16 +178,20 @@ static int resolve(const char *hostport, struct sockaddr_in *sa) {
     return 1;
 }
 
-static void find_local_addrs(int port) {
+static void find_local_addrs(void) {
     char host[256];
     struct addrinfo hints = {0}, *res = NULL, *r;
     local_addrs[0] = 0;
+    n_local_ip = 0;
+    local_ip[n_local_ip++] = htonl(INADDR_LOOPBACK);
     if (gethostname(host, sizeof host) != 0) return;
     hints.ai_family = AF_INET;
     if (getaddrinfo(host, NULL, &hints, &res) != 0) return;
     for (r = res; r; r = r->ai_next) {
-        unsigned char *b = (unsigned char *)&((struct sockaddr_in *)r->ai_addr)->sin_addr;
-        const char *a = inet_ntoa(((struct sockaddr_in *)r->ai_addr)->sin_addr);
+        struct in_addr ia = ((struct sockaddr_in *)r->ai_addr)->sin_addr;
+        unsigned char *b = (unsigned char *)&ia;
+        const char *a = inet_ntoa(ia);
+        if (n_local_ip < 16) local_ip[n_local_ip++] = ia.s_addr;
         // skip loopback, link-local and 172.16/12 (WSL, Docker, Hyper-V switches): nobody connects to those
         if (b[0] == 127 || (b[0] == 169 && b[1] == 254) || (b[0] == 172 && b[1] >= 16 && b[1] < 32)) continue;
         if (strlen(local_addrs) + strlen(a) + 12 >= sizeof local_addrs) continue;
@@ -162,15 +205,67 @@ static void find_local_addrs(int port) {
         strcat(local_addrs, a);
     }
     freeaddrinfo(res);
-    (void)port;
+}
+
+static int is_self(const struct sockaddr_in *a) {
+    if (ntohs(a->sin_port) != my_port) return 0;
+    for (int i = 0; i < n_local_ip; i++)
+        if (local_ip[i] == a->sin_addr.s_addr) return 1;
+    return 0;
+}
+
+static int same_addr(const struct sockaddr_in *a, const struct sockaddr_in *b) {
+    return a->sin_addr.s_addr == b->sin_addr.s_addr && a->sin_port == b->sin_port;
+}
+
+static void reset_streams(Peer *p) {
+    p->out_first = p->out_next = 1;
+    p->rx_next = 1;
+    p->have_in = 0;
+    p->es_have = 0;
+    // drop undelivered events from this peer's previous session
+    int k = 0;
+    for (int i = 0; i < in_count; i++) {
+        InEvent *e = &inq[(in_head + i) % EV_QUEUE];
+        if (e->slot == (int)(p - peers)) continue;
+        inq[(in_head + k) % EV_QUEUE] = *e;
+        k++;
+    }
+    in_count = k;
+}
+
+// slot for this address: existing, or a free one (learned peer); -1 if full / it is us
+static int slot_for(const struct sockaddr_in *a, int add) {
+    for (int i = 0; i < MAXP; i++)
+        if (peers[i].used && same_addr(&peers[i].addr, a)) return i;
+    if (!add || is_self(a)) return -1;
+    for (int i = 0; i < MAXP; i++)
+        if (!peers[i].used) {
+            memset(&peers[i], 0, sizeof peers[i]);
+            peers[i].used = 1;
+            peers[i].addr = *a;
+            reset_streams(&peers[i]);
+            return i;
+        }
+    return -1;
+}
+
+static void set_peers(const char *list) {
+    char buf[400], *s, *ctx = NULL;
+    strncpy(buf, list, sizeof buf - 1);
+    buf[sizeof buf - 1] = 0;
+    for (s = strtok_s(buf, ",;", &ctx); s; s = strtok_s(NULL, ",;", &ctx)) {
+        struct sockaddr_in a;
+        if (resolve(s, &a)) slot_for(&a, 1);
+    }
 }
 
 EXPORT net_start(const char *cfgpath) {
     WSADATA w;
-    int port = 7777;
-    char line[256], peerstr[200] = "";
+    char line[512], peerstr[400] = "";
     if (sock != INVALID_SOCKET) return 1;  // game_restart / game_load re-run the init script
     memset(&out, 0, sizeof out);
+    memset(peers, 0, sizeof peers);
     out.magic = MAGIC;
     out.modver = MOD_VERSION;
     out.session = GetTickCount() ^ (GetCurrentProcessId() << 16) ^ 0x9E3779B9u;
@@ -187,7 +282,7 @@ EXPORT net_start(const char *cfgpath) {
     if (f) {
         while (fgets(line, sizeof line, f)) {
             trim(line);
-            if (!strncmp(line, "port=", 5)) port = atoi(line + 5);
+            if (!strncmp(line, "port=", 5)) my_port = atoi(line + 5);
             else if (!strncmp(line, "peer=", 5)) strncpy(peerstr, line + 5, sizeof peerstr - 1);
             else if (!strncmp(line, "name=", 5)) { strncpy(out.name, line + 5, 15); out.name[15] = 0; }
             else if (!strncmp(line, "skin=", 5)) {
@@ -216,20 +311,16 @@ EXPORT net_start(const char *cfgpath) {
     struct sockaddr_in me = {0};
     me.sin_family = AF_INET;
     me.sin_addr.s_addr = INADDR_ANY;
-    me.sin_port = htons((u_short)port);
+    me.sin_port = htons((u_short)my_port);
     if (bind(sock, (struct sockaddr *)&me, sizeof me) != 0) {
-        snprintf(status, sizeof status, "port %d busy", port);
+        snprintf(status, sizeof status, "port %d busy", my_port);
         closesocket(sock);
         sock = INVALID_SOCKET;
         return -3;
     }
-    find_local_addrs(port);
-    if (peerstr[0]) {
-        have_peer = resolve(peerstr, &peer);
-        snprintf(status, sizeof status, have_peer ? "port %d -> %s" : "port %d, bad peer %s", port, peerstr);
-    } else {
-        snprintf(status, sizeof status, "port %d, waiting for peer", port);
-    }
+    find_local_addrs();
+    set_peers(peerstr);
+    snprintf(status, sizeof status, peerstr[0] ? "port %d -> %s" : "port %d, waiting for players", my_port, peerstr);
     return 1;
 }
 
@@ -239,61 +330,72 @@ EXPORT net_set(double i, double v) {
     return 0;
 }
 
-EXPORT net_send(void) {
-    if (sock == INVALID_SOCKET || !have_peer) return 0;
-    out.seq++;
-    out.ack = rx_next - 1;
-    unsigned int n = 0;
-    for (unsigned int id = out_first; id < out_next && n < EV_PER_PACKET; id++, n++)
-        out.ev[n] = outq[id % EV_QUEUE];
-    out.nev = n;
-    if (sendto(sock, (const char *)&out, sizeof out, 0, (struct sockaddr *)&peer, sizeof peer) != sizeof out) {
-        n_err++;
-        last_err = WSAGetLastError();
-        return 0;
+static void send_gossip(void) {
+    PPacket pp;
+    for (int t = 0; t < MAXP; t++) {
+        if (!alive(&peers[t])) continue;
+        memset(&pp, 0, sizeof pp);
+        pp.magic = PMAGIC;
+        pp.session = out.session;
+        for (int i = 0; i < MAXP; i++) {
+            if (i == t || !alive(&peers[i])) continue;
+            pp.a[pp.count].ip = peers[i].addr.sin_addr.s_addr;
+            pp.a[pp.count].port = peers[i].addr.sin_port;
+            pp.count++;
+        }
+        if (pp.count) sendto(sock, (const char *)&pp, sizeof pp, 0, (struct sockaddr *)&peers[t].addr, sizeof peers[t].addr);
     }
-    n_tx++;
-    return 1;
 }
 
-static void take_events(const Packet *p) {
-    // peer acknowledged our events up to p->ack
-    while (out_first < out_next && (int)(p->ack - out_first) >= 0) out_first++;
-    for (unsigned int k = 0; k < p->nev && k < EV_PER_PACKET; k++) {
-        const Event *e = &p->ev[k];
-        if (e->id != rx_next) continue;  // duplicate or out of order: it will be resent
+EXPORT net_send(void) {
+    if (sock == INVALID_SOCKET) return 0;
+    int sent = 0;
+    out.seq++;
+    for (int i = 0; i < MAXP; i++) {
+        Peer *p = &peers[i];
+        if (!p->used) continue;
+        out.ack = p->rx_next - 1;
+        unsigned int n = 0;
+        for (unsigned int id = p->out_first; id < p->out_next && n < EV_PER_PACKET; id++, n++)
+            out.ev[n] = p->outq[id % EV_QUEUE];
+        out.nev = n;
+        if (sendto(sock, (const char *)&out, sizeof out, 0, (struct sockaddr *)&p->addr, sizeof p->addr) != sizeof out) {
+            n_err++;
+            last_err = WSAGetLastError();
+        } else sent = 1;
+    }
+    if (sent) n_tx++;
+    if (GetTickCount() - last_gossip > 2000) { last_gossip = GetTickCount(); send_gossip(); }
+    return sent;
+}
+
+static void take_events(Peer *p, int slot, const Packet *pk) {
+    // peer acknowledged our events up to pk->ack
+    while (p->out_first < p->out_next && (int)(pk->ack - p->out_first) >= 0) p->out_first++;
+    for (unsigned int k = 0; k < pk->nev && k < EV_PER_PACKET; k++) {
+        const Event *e = &pk->ev[k];
+        if (e->id != p->rx_next) continue;  // duplicate or out of order: it will be resent
         if (in_count < EV_QUEUE) {
-            inq[(in_head + in_count) % EV_QUEUE] = *e;
+            InEvent *q = &inq[(in_head + in_count) % EV_QUEUE];
+            q->e = *e;
+            q->slot = slot;
+            q->session = p->session;
             in_count++;
         }
-        rx_next++;
+        p->rx_next++;
         n_ev_rx++;
     }
 }
 
-// Drain the socket; keep the newest state, deliver events. Returns 1 if something new arrived.
+// Drain the socket; keep each peer's newest state, deliver events. Returns 1 if something new arrived.
 EXPORT net_poll(void) {
     if (sock == INVALID_SOCKET) return 0;
     int got = 0;
-    static union { Packet p; EPacket ep; char raw[2048]; } buf;
+    static union { Packet p; EPacket ep; PPacket pp; char raw[2048]; } buf;
     for (;;) {
-        Packet p;
         struct sockaddr_in from;
         int fl = sizeof from;
         int n = recvfrom(sock, buf.raw, sizeof buf.raw, 0, (struct sockaddr *)&from, &fl);
-        if (n >= 16 && buf.ep.magic == EMAGIC) {
-            unsigned int cnt = buf.ep.count;
-            if (cnt <= ES_MAX && n == (int)(16 + cnt * sizeof(EState)) && buf.ep.session == peer_session &&
-                (!es_have || (int)(buf.ep.seq - es_last_seq) > 0 || (int)(es_last_seq - buf.ep.seq) > 600)) {
-                memcpy(&es_in, &buf.ep, n);
-                es_last_seq = buf.ep.seq;
-                es_rx_time = GetTickCount();
-                es_have = 1;
-            }
-            continue;
-        }
-        if (n > (int)sizeof p) { n_bad++; continue; }
-        if (n > 0) memcpy(&p, buf.raw, n);
         if (n < 0) {
             int e = WSAGetLastError();
             if (e == WSAEWOULDBLOCK) break;
@@ -302,76 +404,141 @@ EXPORT net_poll(void) {
             if (e != WSAECONNRESET && e != WSAEMSGSIZE) break;
             continue;
         }
-        if (n >= 8 && p.magic == MAGIC && p.modver != MOD_VERSION) { n_old++; last_old = GetTickCount(); peer_modver = (int)p.modver; continue; }
-        if (n >= 8 && p.magic != MAGIC && (p.magic & 0xFFFFFF) == (MAGIC & 0xFFFFFF)) { n_old++; last_old = GetTickCount(); peer_modver = 0; continue; }
-        if (n >= 4 && p.magic == 0x484D4350u) { n_old++; last_old = GetTickCount(); peer_modver = 0; continue; }  // v0.1 "HMCP"
-        if (n != sizeof p || p.magic != MAGIC) { n_bad++; continue; }
-        n_rx++;
-        if (!have_peer) {  // the side without peer= learns the address from the first packet
-            peer = from;
-            have_peer = 1;
+        if (n < 8) { n_bad++; continue; }
+        unsigned int magic = buf.p.magic;
+        if (magic == PMAGIC && n == (int)sizeof(PPacket)) {  // addresses of players our peer knows
+            int s = slot_for(&from, 0);
+            if (s < 0 || !peers[s].have_in || buf.pp.session != peers[s].session) continue;
+            for (unsigned int i = 0; i < buf.pp.count && i < MAXP; i++) {
+                struct sockaddr_in a = {0};
+                a.sin_family = AF_INET;
+                a.sin_addr.s_addr = buf.pp.a[i].ip;
+                a.sin_port = buf.pp.a[i].port;
+                slot_for(&a, 1);
+            }
+            continue;
         }
-        if (p.session != peer_session) {  // partner (re)started: both event streams begin again at id 1
-            peer_session = p.session;
-            rx_next = 1;
-            out_first = out_next = 1;
-            in_count = 0;
-            have_in = 0;
-            es_have = 0;
+        if (magic == EMAGIC && n >= 16) {
+            int s = slot_for(&from, 0);
+            if (s < 0) continue;
+            Peer *p = &peers[s];
+            unsigned int cnt = buf.ep.count;
+            if (cnt <= ES_MAX && n == (int)(16 + cnt * sizeof(EState)) && p->have_in && buf.ep.session == p->session &&
+                (!p->es_have || (int)(buf.ep.seq - p->es_last_seq) > 0 || (int)(p->es_last_seq - buf.ep.seq) > 600)) {
+                memcpy(&p->es_in, &buf.ep, n);
+                p->es_last_seq = buf.ep.seq;
+                p->es_rx_time = GetTickCount();
+                p->es_have = 1;
+            }
+            continue;
         }
-        take_events(&p);  // events are processed even from late packets (ids dedupe them)
-        if (have_in && (int)(p.seq - last_seq) <= 0 && (int)(last_seq - p.seq) < 600) continue;  // stale
-        memcpy(&in, &p, sizeof in);
-        last_seq = p.seq;
-        have_in = 1;
-        last_rx = GetTickCount();
-        memcpy(peer_name, p.name, 16);
-        peer_name[16] = 0;
+        // other mod versions: remember to tell the player
+        if ((magic & 0xFFFFFF) == (MAGIC & 0xFFFFFF) || magic == 0x484D4350u) {
+            int bad = magic != MAGIC || n != (int)sizeof(Packet) || buf.p.modver != MOD_VERSION;
+            if (bad) {
+                int s = slot_for(&from, 1);
+                if (s >= 0) {
+                    peers[s].n_old++;
+                    peers[s].last_old = GetTickCount();
+                    peers[s].modver = (magic == MAGIC) ? (int)buf.p.modver : 0;
+                }
+                continue;
+            }
+        }
+        if (n != (int)sizeof(Packet) || magic != MAGIC) { n_bad++; continue; }
+        if (buf.p.session == out.session) continue;  // our own packet (we are listed as a peer)
+        int s = slot_for(&from, 1);
+        if (s < 0) continue;  // all slots taken
+        Peer *p = &peers[s];
+        // the same player known under two addresses (e.g. gossip): keep the first slot
+        int dup = 0;
+        for (int i = 0; i < MAXP; i++)
+            if (i != s && peers[i].used && peers[i].have_in && peers[i].session == buf.p.session) dup = 1;
+        if (dup) { p->used = 0; continue; }
+        if (buf.p.session != p->session) {  // peer (re)started: both event streams begin again at id 1
+            p->session = buf.p.session;
+            reset_streams(p);
+        }
+        p->n_rx++;
+        take_events(p, s, &buf.p);  // events are processed even from late packets (ids dedupe them)
+        if (p->have_in && (int)(buf.p.seq - p->last_seq) <= 0 && (int)(p->last_seq - buf.p.seq) < 600) continue;  // stale
+        memcpy(&p->in, &buf.p, sizeof p->in);
+        p->last_seq = buf.p.seq;
+        p->have_in = 1;
+        p->last_rx = GetTickCount();
+        memcpy(p->name, buf.p.name, 16);
+        p->name[16] = 0;
         got = 1;
     }
     write_log();
     return got;
 }
 
+// ---- peers
+EXPORT net_peers(void) { return MAXP; }
+EXPORT net_sel(double slot) {
+    int s = (int)slot;
+    sel = (s >= 0 && s < MAXP) ? s : 0;
+    return sel;
+}
+// field of the selected peer's latest state (0 when nothing heard)
 EXPORT net_get(double i) {
     int k = (int)i;
-    return (have_in && k >= 0 && k < NFIELDS) ? in.f[k] : 0;
+    Peer *p = &peers[sel];
+    return (p->used && p->have_in && k >= 0 && k < NFIELDS) ? p->in.f[k] : 0;
 }
-
-// Milliseconds since the last packet, or -1 if never.
+// milliseconds since the selected peer's last packet, or -1 if never
 EXPORT net_age(void) {
-    return have_in ? (double)(GetTickCount() - last_rx) : -1;
+    Peer *p = &peers[sel];
+    return p->used && p->have_in ? (double)(GetTickCount() - p->last_rx) : -1;
 }
+// deterministic tie-break with the selected peer: 1 on exactly one side
+EXPORT net_rank(void) { return out.session < peers[sel].session ? 1 : 0; }
+// the selected peer's session (stable id for this game launch), 0 if unknown
+EXPORT net_psession(void) { return peers[sel].have_in ? peers[sel].session : 0; }
+__declspec(dllexport) const char *__cdecl net_peer_name(void) { return peers[sel].name; }
 
 // ---- reliable events
-EXPORT net_event(double type, double a, double b, double c) {
-    if (out_next - out_first >= EV_QUEUE - 1) return 0;  // queue full (peer gone for a long time)
-    Event *e = &outq[out_next % EV_QUEUE];
-    e->id = out_next++;
+static int enqueue(Peer *p, double type, double a, double b, double c, double d) {
+    if (p->out_next - p->out_first >= EV_QUEUE - 1) return 0;  // queue full (peer gone for a long time)
+    Event *e = &p->outq[p->out_next % EV_QUEUE];
+    e->id = p->out_next++;
     e->type = (unsigned int)type;
     e->a[0] = a;
     e->a[1] = b;
     e->a[2] = c;
-    e->a[3] = 0;
+    e->a[3] = d;
+    return 1;
+}
+// to every peer
+EXPORT net_event(double type, double a, double b, double c) {
+    for (int i = 0; i < MAXP; i++)
+        if (peers[i].used) enqueue(&peers[i], type, a, b, c, 0);
     n_ev_tx++;
     return 1;
 }
-
-// same with a fourth value
 EXPORT net_event4(double type, double a, double b, double c, double d) {
-    if (!net_event(type, a, b, c)) return 0;
-    outq[(out_next - 1) % EV_QUEUE].a[3] = d;
+    for (int i = 0; i < MAXP; i++)
+        if (peers[i].used) enqueue(&peers[i], type, a, b, c, d);
+    n_ev_tx++;
     return 1;
+}
+// to one peer (enemy handoff, revive)
+EXPORT net_event4_to(double slot, double type, double a, double b, double c, double d) {
+    int s = (int)slot;
+    if (s < 0 || s >= MAXP || !peers[s].used) return 0;
+    n_ev_tx++;
+    return enqueue(&peers[s], type, a, b, c, d);
 }
 
 EXPORT net_ev_count(void) { return in_count; }
 
-// field 0 = type, 1..4 = a, b, c, d of the oldest unread event
+// field 0 = type, 1..4 = a, b, c, d, 5 = sender's slot of the oldest unread event
 EXPORT net_ev_get(double k) {
     if (!in_count) return 0;
-    Event *e = &inq[in_head];
+    InEvent *e = &inq[in_head];
     int i = (int)k;
-    return i == 0 ? (double)e->type : (i >= 1 && i <= 4) ? e->a[i - 1] : 0;
+    return i == 0 ? (double)e->e.type : (i >= 1 && i <= 4) ? e->e.a[i - 1] : i == 5 ? e->slot : 0;
 }
 
 EXPORT net_ev_pop(void) {
@@ -397,37 +564,41 @@ EXPORT net_es_add(double uid, double obj, double x, double y, double dir, double
 }
 
 EXPORT net_es_send(void) {
-    if (sock == INVALID_SOCKET || !have_peer) return 0;
+    if (sock == INVALID_SOCKET) return 0;
     es_out.magic = EMAGIC;
     es_out.session = out.session;
     es_out.seq++;
-    int len = 16 + es_out.count * sizeof(EState);
-    return sendto(sock, (const char *)&es_out, len, 0, (struct sockaddr *)&peer, sizeof peer) == len;
+    int len = 16 + es_out.count * sizeof(EState), ok = 0;
+    for (int i = 0; i < MAXP; i++)
+        if (alive(&peers[i]) && sendto(sock, (const char *)&es_out, len, 0, (struct sockaddr *)&peers[i].addr, sizeof peers[i].addr) == len) ok = 1;
+    return ok;
 }
 
-// field of the partner's latest state for enemy uid: 0 obj, 1 x, 2 y, 3 dir, 4 sprite, 5 frame, 6 alert.
-// Returns -100000 when the partner does not currently simulate that enemy (or the data is stale).
+// field of the latest state some peer sends for enemy uid: 0 obj, 1 x, 2 y, 3 dir, 4 sprite, 5 frame,
+// 6 alert, 7 the sending peer's slot. -100000 when no peer currently simulates it (or the data is stale).
 EXPORT net_es_get(double uid, double field) {
-    if (!es_have || GetTickCount() - es_rx_time > 1000) return -100000;
     int u = (int)uid;
-    for (unsigned int i = 0; i < es_in.count; i++) {
-        EState *e = &es_in.e[i];
-        if (e->uid != u) continue;
-        switch ((int)field) {
-            case 0: return e->obj;
-            case 1: return e->x;
-            case 2: return e->y;
-            case 3: return e->dir;
-            case 4: return e->spr;
-            case 5: return e->img;
-            case 6: return e->alert;
+    for (int s = 0; s < MAXP; s++) {
+        Peer *p = &peers[s];
+        if (!p->used || !p->es_have || GetTickCount() - p->es_rx_time > 1000) continue;
+        for (unsigned int i = 0; i < p->es_in.count; i++) {
+            EState *e = &p->es_in.e[i];
+            if (e->uid != u) continue;
+            switch ((int)field) {
+                case 0: return e->obj;
+                case 1: return e->x;
+                case 2: return e->y;
+                case 3: return e->dir;
+                case 4: return e->spr;
+                case 5: return e->img;
+                case 6: return e->alert;
+                case 7: return s;
+            }
+            return 0;
         }
     }
     return -100000;
 }
-
-// Deterministic tie-break between the two players: 1 on exactly one side.
-EXPORT net_rank(void) { return out.session < peer_session ? 1 : 0; }
 
 // ---- misc
 // Monotonic counter that survives game_load (which rewinds every GML variable).
@@ -450,40 +621,39 @@ EXPORT net_focused(void) {
     return pid == GetCurrentProcessId();
 }
 
+static Peer *old_peer(void) {
+    for (int i = 0; i < MAXP; i++)
+        if (peers[i].used && OLD_RECENT(&peers[i])) return &peers[i];
+    return NULL;
+}
+
 __declspec(dllexport) const char *__cdecl net_status(void) {
     static char msg[160];
-    if (!OLD_RECENT) return status;
-    if (peer_modver)
-        snprintf(msg, sizeof msg, "partner has mod v%d.%d, you have v%d.%d - install the same version", peer_modver / 100,
-                 peer_modver % 100 / 10 + 0, MOD_VERSION / 100, MOD_VERSION % 100 / 10);
+    Peer *p = old_peer();
+    if (!p) return status;
+    if (p->modver)
+        snprintf(msg, sizeof msg, "a player has mod v%d.%d, you have v%d.%d - install the same version",
+                 p->modver / 100, p->modver % 100 / 10, MOD_VERSION / 100, MOD_VERSION % 100 / 10);
     else
-        snprintf(msg, sizeof msg, "partner has an older mod version, you have v%d.%d - install the same version",
+        snprintf(msg, sizeof msg, "a player has an older mod version, you have v%d.%d - install the same version",
                  MOD_VERSION / 100, MOD_VERSION % 100 / 10);
     return msg;
 }
-// 1 while the partner's packets are rejected because of a different mod version
-EXPORT net_version_mismatch(void) { return OLD_RECENT ? 1 : 0; }
+// 1 while some peer's packets are rejected because of a different mod version
+EXPORT net_version_mismatch(void) { return old_peer() ? 1 : 0; }
 // our local / VPN IPv4 addresses (Radmin shows up as 26.x.x.x)
 __declspec(dllexport) const char *__cdecl net_local(void) { return local_addrs; }
-// change the partner's address / our name while running (in-game connect menu)
-EXPORT net_set_peer(const char *hostport) {
-    struct sockaddr_in a;
-    if (!hostport[0] || !resolve(hostport, &a)) return 0;
-    peer = a;
-    have_peer = 1;
-    snprintf(status, sizeof status, "-> %s", hostport);
-    return 1;
+// peers' addresses (comma separated) added while running (in-game menu); known ones stay
+EXPORT net_set_peer(const char *list) {
+    int before = 0, after = 0;
+    for (int i = 0; i < MAXP; i++) before += peers[i].used;
+    set_peers(list);
+    for (int i = 0; i < MAXP; i++) after += peers[i].used;
+    snprintf(status, sizeof status, "port %d -> %s", my_port, list);
+    return after > before || after > 0;
 }
 EXPORT net_set_name(const char *name) {
     strncpy(out.name, name, 15);
     out.name[15] = 0;
     return 1;
-}
-__declspec(dllexport) const char *__cdecl net_peer_name(void) { return peer_name; }
-
-EXPORT net_stop(void) {
-    if (sock != INVALID_SOCKET) closesocket(sock);
-    sock = INVALID_SOCKET;
-    WSACleanup();
-    return 0;
 }

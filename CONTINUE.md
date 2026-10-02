@@ -1,6 +1,6 @@
 # Hotline Miami 1 co-op mod — handoff for a new chat
 
-Current release: **v0.6.1** (`dist/HotlineMiami-Coop-v0.6.1.zip`). Full technical journal: `MODLOG.md` (read it first).
+Current release: **v0.7** (`dist/HotlineMiami-Coop-v0.7.zip`). Full technical journal: `MODLOG.md` (read it first).
 
 Repo: https://github.com/AHceky/hotline-miami-coop (private). Release zips go to GitHub Releases
 (`gh release create vX dist/HotlineMiami-Coop-vX.zip`); gh is at "C:\Program Files\GitHub CLI\gh.exe".
@@ -25,7 +25,7 @@ Repo: https://github.com/AHceky/hotline-miami-coop (private). Release zips go to
 - `C:\Users\RobotComp\hm-tools\build\` — `hmnet.dll` build dir; zig at
   `%LOCALAPPDATA%\Microsoft\WinGet\Packages\zig.zig_*\zig-x86_64-windows-0.16.0\zig.exe`;
   OpenGMK source; `pyembed/` (python.org embeddable zip).
-- `C:\Users\RobotComp\hm-lab1`, `hm-lab2` — two lab copies of the game for two-instance tests
+- `C:\Users\RobotComp\hm-lab1`, `hm-lab2`, `hm-lab3`, `hm-lab4` — lab copies of the game (ports 7787-7790); hm-tools/shots/labs4.sh N starts N of them, grid.py lays them out 2x2
   (ports 7787/7788 in their hmcoop.txt). The user's real game: `C:\Program Files (x86)\Steam\steamapps\common\hotline_miami`.
 
 ## Build / test

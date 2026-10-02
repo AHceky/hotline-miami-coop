@@ -19,3 +19,7 @@ coop_canrevive=0
 coop_bossroom=-1
 coop_bosssent=-1
 coop_wsent=-1
+coop_everconn=0
+coop_wn=0
+var s;
+for (s=0;s<3;s+=1) {gx[s]=0 gy[s]=0 gfirst[s]=1}

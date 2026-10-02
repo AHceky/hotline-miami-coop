@@ -14,7 +14,7 @@ loc=external_call(global.__net_local)
 draw_set_font(fntDate)
 draw_set_halign(fa_left)
 m0="CHARACTER: "+string_upper(scrCoopSkinName(global.coop_skin))+"   (C - CHANGE)"
-m1="NAME: "+string_upper(global.coop_name)+" (N)    PARTNER: "+global.coop_peerstr+" (I)"
+m1="NAME: "+string_upper(global.coop_name)+" (N)    PLAYERS: "+global.coop_peerstr+" (I)"
 m2="YOUR RADMIN / LAN IP: "+loc
 draw_set_color(c_black)
 draw_text(px+25,py-7,m0)

@@ -2,8 +2,8 @@
 
 [Русская версия](README.ru.md)
 
-Two-player online co-op for **Hotline Miami 1** (Steam, the GameMaker 7 `HotlineMiami_Original.exe`).
-Each player runs their own game; the mod links the two games over UDP (Radmin VPN, ZeroTier or a LAN)
+Online co-op for **2–4 players** in **Hotline Miami 1** (Steam, the GameMaker 7 `HotlineMiami_Original.exe`).
+Each player runs their own game; the mod links the games over UDP (Radmin VPN, ZeroTier or a LAN)
 and keeps the world in sync.
 
 The mod ships **no game files**. The installer patches your own copy of the game into a new
@@ -12,18 +12,20 @@ copy of Hotline Miami 2 at install time.
 
 ## Features
 
-- **Partner on your screen**: position, aim, weapon, mask, name above the head.
+- **Up to 4 players**: everyone connects to everyone directly; you only need to enter one other
+  player's IP, the rest are found automatically.
+- **The others on your screen**: position, aim, weapon, mask, name above the head.
 - **Shared enemies**: every enemy is simulated by the player closer to it and mirrored on the other
   side, so enemies walk, shoot, get knocked down and die the same way for both. Enemy bullets fly on
   both screens; enemies the partner controls can still kill you in melee. Enemies the game spawns at
   runtime (metro train, SWAT, the dumpster hobo) are shared too.
 - **Kills and floors**: a kill counts for both, a cleared floor is cleared for both. Taking an exit
   arrow or an elevator takes the partner along. A boss beaten by one goes down for the other.
-- **Level end**: the car leaves only when both players sit in it (Enter in the car: leave alone).
+- **Level end**: the car leaves only when everyone in the level sits in it (Enter in the car: leave alone).
 - **Weapons**: weapons on the floor are the same for both; a pickup removes it for the partner,
   thrown and dropped weapons fly and land on both screens. The partner's bullets are drawn too.
-- **Revive**: when your partner dies, stand on the body and press **E**. While you lie dead, your
-  partner runs your enemies; **R** restarts the floor as usual.
+- **Revive**: when another player dies, stand on the body and press **E**. While you lie dead, a
+  living player runs your enemies; **R** restarts the floor as usual.
 - **Doors and dialogs**: a door you push swings for the partner; conversation boxes advance and close
   for both.
 - **Characters**: Jacket, plus (from your HM2) Beard, Richter, Corey, Jake, Son, Writer (Evan),
@@ -33,7 +35,7 @@ copy of Hotline Miami 2 at install time.
 
 ## Requirements
 
-- Hotline Miami (Steam) for **each** player.
+- Hotline Miami (Steam) for **each** player (2 to 4 players).
 - Hotline Miami 2 (Steam) for the HM2 characters (optional: without it you are Jacket).
 - A shared network: [Radmin VPN](https://www.radmin-vpn.com/) (recommended), ZeroTier or a LAN.
 - Both players on the **same mod version**.
@@ -42,7 +44,8 @@ copy of Hotline Miami 2 at install time.
 
 1. Download the release zip and unpack it **completely** anywhere.
 2. Run `install.bat`. It finds the games in Steam, builds `HotlineMiami_Coop.exe` next to the game and
-   asks for your name, the partner's Radmin IP (looks like `26.x.x.x`) and a character.
+   asks for your name, the other players' Radmin IPs (look like `26.x.x.x`, comma separated —
+   one is enough) and a character.
    Python is bundled (official embeddable build from python.org) — nothing to install.
 3. Uninstall: `uninstall.bat`.
 
@@ -51,8 +54,8 @@ copy of Hotline Miami 2 at install time.
 1. Both start `HotlineMiami_Coop.exe` from the game folder (Steam running). If the game asks
    "Enable Steamworks?", answer **No**.
 2. Top left of the menu: `CO-OP: connected to <name>` — you are linked.
-3. Main menu keys: **C** character (Shift+C back), **N** your name, **I** partner's IP. Your own
-   Radmin / LAN address is shown there — tell it to your partner.
+3. Main menu keys: **C** character (Shift+C back), **N** your name, **I** other players' IPs. Your
+   own Radmin / LAN address is shown there — tell it to the others.
 4. Pick the same chapter. When you are on the same floor you see each other.
 
 The game keeps running when its window is not focused (otherwise the partner would freeze), but it

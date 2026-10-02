@@ -204,3 +204,19 @@ partner is streamed over UDP and drawn as a ghost in your level. Later: kill syn
 - The user wanted Radmin only. STUN query, net_public and the P (copy address) key are gone; the menu shows
   "YOUR RADMIN / LAN IP" (net_local: 26.x first, 172.16/12 and link-local skipped). MOD_VERSION stays 60, so 0.6
   and 0.6.1 play together. Verified: labs connect, menu shows the 26.x Radmin address.
+
+## v0.7 (2026-10-02): 2-4 players
+- hmnet.c rewritten for a full mesh: MAXP=3 peer slots (configured "peer=a,b,c", learned from unknown senders, and
+  gossiped every 2 s with an HMP4 packet listing the other live peers, so one known IP is enough). Per peer: state,
+  its own reliable event stream (outq/acks), enemy-state packet, session, version. Broadcast net_event/net_event4,
+  directed net_event4_to(slot,...) for handoffs (3) and revive (13). GML selects the peer it reads with net_sel(slot);
+  net_ev_get(5) = sender slot; net_es_get(uid,7) = slot of the peer that sends that enemy. MOD_VERSION 70.
+- GML: scrCoopPeers snapshots every slot after net_poll (pok/pst/proom/px/py/prt/pcar/prank/pname/pin + counts).
+  Ghost drawing loops over slots (gx/gy/gfirst arrays). Handoff goes to the closest peer on the floor; ownership
+  conflicts are resolved against the peer that sends the enemy; a puppet nobody sends for 1.5 s is adopted. Car waits
+  for every connected peer in a level; revive is sent to the dead peer's slot; dead players hand their enemies to an
+  alive one; the most senior player on a floor sends the weapon list whenever someone arrives.
+- Gotcha: global.coop_np was already the debug overlay's puppet counter -> renamed to global.coop_npeers.
+- Verified with 4 labs (hm-lab1..4, ports 7787-7790, each configured with ONE other address): all four found each
+  other, "connected to A, B, C" everywhere; F11/F10 moved all four; one owner per enemy; F9 in one lab -> 0 enemies
+  in all four; lab3 died, lab1 pressed E -> lab3 revived.

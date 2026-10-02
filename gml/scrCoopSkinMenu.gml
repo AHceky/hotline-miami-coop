@@ -1,6 +1,6 @@
 // (objCoopNet) title screen co-op menu:
 //   C / Shift+C  character (only the ones built in), saved to hmcoop.txt, the partner sees it at once
-//   I            partner's Radmin / LAN IP
+//   I            the other players' Radmin / LAN IPs, comma separated (one is enough, the rest are learned)
 //   N            your name above your ghost
 if !instance_exists(objTitle) exit
 if global.coop_focus!=1 exit
@@ -18,9 +18,8 @@ scrCoopSaveSkin(scrCoopSkinName(k))
 }
 if keyboard_check_pressed(ord("I")) {
 io_clear()
-s=get_string("Partner address (IP or IP:port):",global.coop_peerstr)
+s=get_string("Other players (Radmin IPs, comma separated; one is enough):",global.coop_peerstr)
 if s!="" and s!=global.coop_peerstr {
-if string_pos(":",s)=0 s+=":7777"
 if external_call(global.__net_set_peer,s) {global.coop_peerstr=s scrCoopSaveCfg("peer",s)} else show_message("Can't find address "+s)
 }
 io_clear()
