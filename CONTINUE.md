@@ -2,6 +2,9 @@
 
 Current release: **v0.6.1** (`dist/HotlineMiami-Coop-v0.6.1.zip`). Full technical journal: `MODLOG.md` (read it first).
 
+Repo: https://github.com/AHceky/hotline-miami-coop (private). Release zips go to GitHub Releases
+(`gh release create vX dist/HotlineMiami-Coop-vX.zip`); gh is at "C:\Program Files\GitHub CLI\gh.exe".
+
 ## What the mod does
 - Patches the user's own `HotlineMiami_Original.exe` (GameMaker 7) into `HotlineMiami_Coop.exe`.
 - Partner shown as a named ghost; skins Jacket / Beard (HM2 "Nicke" sprites from the user's HM2 install).
