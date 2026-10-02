@@ -99,5 +99,3 @@ py -3 tools/fix_bgm.py "<game>/bgm.dll" "<game>/hmbgm.dll"
 ## Credits
 
 Authors: [AHceky](https://github.com/AHceky), [MoestroSWAGa](https://github.com/MoestroSWAGa).
-Made with Claude (Anthropic). Hotline Miami and Hotline Miami 2 © Dennaton Games / Devolver Digital.
-This is a fan project; it contains no game files and needs your own copies of the games.

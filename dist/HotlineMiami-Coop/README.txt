@@ -173,5 +173,4 @@ tools/build_mod.py добавляет объект objCoopNet и скрипты 
 спрайты Бороды ("Nicke") из hlm2_data_desktop.wad. hmnet.dll (исходник tools/hmnet.c) — UDP:
 состояние игрока 60 раз в секунду + надёжный канал событий (убийства, переходы) с подтверждениями.
 
-Сделано с помощью Claude (Anthropic). Без файлов игр; Hotline Miami и Hotline Miami 2
-(c) Dennaton Games / Devolver Digital.
+Авторы: AHceky, MoestroSWAGa.
