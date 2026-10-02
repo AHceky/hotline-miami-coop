@@ -1,0 +1,15 @@
+# release archives and the bundled Python go into GitHub releases, not into the repo
+dist/*.zip
+dist/HotlineMiami-Coop/python/
+# copies of tools/ and gml/ made when packaging
+dist/HotlineMiami-Coop/gml/
+dist/HotlineMiami-Coop/tools/*
+!dist/HotlineMiami-Coop/tools/install.py
+# build outputs and runtime files
+*.dll
+*.exe
+__pycache__/
+hmnet_log.txt
+coop_dbg.txt
+# the C# installer prototype (Defender flags its build as a false positive; not shipped)
+installer/

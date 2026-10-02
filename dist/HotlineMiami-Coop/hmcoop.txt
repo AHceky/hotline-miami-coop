@@ -1,0 +1,5 @@
+port=7777
+peer=
+name=PLAYER
+skin=jacket
+beard_chance=50

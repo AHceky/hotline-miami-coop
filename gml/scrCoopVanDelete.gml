@@ -1,0 +1,5 @@
+ds_list_delete(global.coop_van_uid,argument0)
+ds_list_delete(global.coop_van_x,argument0)
+ds_list_delete(global.coop_van_y,argument0)
+ds_list_delete(global.coop_van_age,argument0)
+ds_list_delete(global.coop_van_own,argument0)

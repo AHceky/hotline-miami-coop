@@ -1,0 +1,11 @@
+// scrCoopWithFamily(script): run script on every enemy-family instance (standing, knocked out, crawling...)
+global.coop_fn=argument0
+with objEnemy script_execute(global.coop_fn)
+with objKnockedOut script_execute(global.coop_fn)
+with objECrawl script_execute(global.coop_fn)
+with objSwatKnockedOut script_execute(global.coop_fn)
+with objSubwayKnockedOut script_execute(global.coop_fn)
+with objHoboKnockedOut script_execute(global.coop_fn)
+with objEHideM16 script_execute(global.coop_fn)
+with objESubwayStatic script_execute(global.coop_fn)
+with objBodyguardCrawl script_execute(global.coop_fn)

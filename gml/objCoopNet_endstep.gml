@@ -1,0 +1,2 @@
+scrCoopTrack()
+scrCoopSendEnemies()
