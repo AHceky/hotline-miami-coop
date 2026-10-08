@@ -10,8 +10,12 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
 ROOT = os.path.dirname(HERE)
+# The release archive has the build tools next to this file. A "Code -> Download ZIP" of the GitHub
+# repository has them in <repo>/tools (and the GML in <repo>/gml) instead: use those.
+REPO = os.path.normpath(os.path.join(HERE, '..', '..', '..'))
+TOOLS = HERE if os.path.isfile(os.path.join(HERE, 'build_mod.py')) else os.path.join(REPO, 'tools')
+sys.path.insert(0, TOOLS)
 STEAM = os.path.join(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'), 'Steam')
 MOD_FILES = ('HotlineMiami_Coop.exe', 'hmnet.dll', 'hmnet_log.txt', 'hmbgm.dll')
 
@@ -175,7 +179,22 @@ def configure(cfg_path, has_beard):
     print(f'Сохранено в {cfg_path}')
 
 
+def missing_files():
+    need = [os.path.join(TOOLS, f) for f in ('build_mod.py', 'gm7.py', 'hm2_extract.py', 'beard_recolor.py', 'fix_bgm.py')]
+    need.append(os.path.join(ROOT, 'hmnet.dll'))
+    return [f for f in need if not os.path.isfile(f)]
+
+
 def main():
+    if '--uninstall' not in sys.argv and missing_files():
+        print('Не хватает файлов мода:')
+        for f in missing_files():
+            print('  ' + f)
+        print()
+        print('Скорее всего скачаны исходники ("Code -> Download ZIP") или архив распакован не целиком.')
+        print('Скачай готовый архив HotlineMiami-Coop-vX.zip из раздела Releases на GitHub,')
+        print('распакуй его ЦЕЛИКОМ и запусти install.bat оттуда.')
+        return 1
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     game = find_game(args[0] if args else None)
     print(f'Игра: {game}')
@@ -191,7 +210,7 @@ def main():
     hm2 = find_hm2(game)
     print(f'Hotline Miami 2: {hm2 or "не найдена (скин Бороды будет недоступен)"}')
     ans = input('Запускать в окне, а не на весь экран? (y/N): ').strip().lower()
-    cmd = [sys.executable, os.path.join(HERE, 'build_mod.py'),
+    cmd = [sys.executable, os.path.join(TOOLS, 'build_mod.py'),
            os.path.join(game, 'HotlineMiami_Original.exe'), os.path.join(game, 'HotlineMiami_Coop.exe')]
     cmd += ['--hm2', hm2] if hm2 else ['--no-hm2']
     if ans in ('y', 'yes', 'д', 'да'):

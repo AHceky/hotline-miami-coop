@@ -13,3 +13,6 @@ hmnet_log.txt
 coop_dbg.txt
 # the C# installer prototype (Defender flags its build as a false positive; not shipped)
 installer/
+
+# the network DLL is part of the installer: ship it in the repo so a source download installs too
+!dist/HotlineMiami-Coop/hmnet.dll
