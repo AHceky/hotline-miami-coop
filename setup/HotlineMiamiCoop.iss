@@ -33,10 +33,15 @@ Name: "en"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "..\dist\HotlineMiami-Coop\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion; Excludes: "__pycache__\*,hmcoop.txt,install.bat,uninstall.bat,hmnet_log.txt"
 
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
+
 [Run]
 Filename: "{code:GameDir}\HotlineMiami_Coop.exe"; WorkingDir: "{code:GameDir}"; Description: "{cm:RunGame}"; Flags: postinstall nowait skipifsilent unchecked; Check: BuildOk
 
 [UninstallDelete]
+Type: files; Name: "{userdesktop}\Hotline Miami Co-op.lnk"
+Type: files; Name: "{userprograms}\Hotline Miami Co-op.lnk"
 Type: files; Name: "{app}\installer.ini"
 Type: files; Name: "{app}\install_log.txt"
 Type: files; Name: "{app}\uninstall_log.txt"
@@ -250,6 +255,7 @@ var
   Peer: String;
   LogLines: TArrayOfString;
   i, n: Integer;
+  Target: String;
 begin
   if CurStep <> ssPostInstall then exit;
   Log := ExpandConstant('{app}\install_log.txt');
@@ -275,6 +281,14 @@ begin
         if i >= 0 then LogText := LogText + LogLines[i] + #13#10;
     end;
     MsgBox(FmtMessage(CustomMessage('BuildFailed'), [Log, LogText]), mbError, MB_OK);
+  end else begin
+    // shortcuts to the co-op game (its own icon), only when it was built
+    Target := AddBackslash(GameDir('')) + 'HotlineMiami_Coop.exe';
+    CreateShellLink(ExpandConstant('{userprograms}\Hotline Miami Co-op.lnk'), 'Hotline Miami Co-op', Target, '',
+      GameDir(''), Target, 0, SW_SHOWNORMAL);
+    if WizardIsTaskSelected('desktopicon') then
+      CreateShellLink(ExpandConstant('{userdesktop}\Hotline Miami Co-op.lnk'), 'Hotline Miami Co-op', Target, '',
+        GameDir(''), Target, 0, SW_SHOWNORMAL);
   end;
 end;
 

@@ -232,3 +232,7 @@ partner is streamed over UDP and drawn as a ghost in your level. Later: kill syn
   C# installer was flagged by Defender (NjRAT ML); the Inno one scanned clean.
 - Verified: GUI run against hm-lab4 (detected the real Steam folder first, prefilled FOURTH/peer/Son), build OK,
   "Apps" entry; silent uninstall removed the mod files from the game folder and the app folder, kept hmcoop.txt.
+
+- Shortcuts (2026-10-10): after a successful build the installer creates "Hotline Miami Co-op.lnk" in the Start menu
+  and (task "desktopicon", on by default) on the desktop, target <game>\HotlineMiami_Coop.exe, working dir = game
+  folder, game icon; removed by the uninstaller. Verified install -> both links correct -> uninstall -> gone.
