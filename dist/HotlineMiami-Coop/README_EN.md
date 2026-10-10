@@ -40,9 +40,16 @@ copy of Hotline Miami 2 at install time.
 - A shared network: [Radmin VPN](https://www.radmin-vpn.com/) (recommended), ZeroTier or a LAN.
 - Both players on the **same mod version**.
 
-## Install (both players)
+## Install (every player)
 
-1. Download the release zip and unpack it **completely** anywhere.
+**Easiest:** download `HotlineMiami-Coop-Setup-vX.exe` from Releases and run it. It finds the game,
+asks for your name, the other players' IPs and a character, builds the co-op game and adds an
+uninstaller to Windows "Apps". (Windows SmartScreen may warn about an unknown publisher: "More info"
+→ "Run anyway".)
+
+**Or by hand:**
+
+1. Download the release zip and unpack it **completely** anywhere (not "Code → Download ZIP").
 2. Run `install.bat`. It finds the games in Steam, builds `HotlineMiami_Coop.exe` next to the game and
    asks for your name, the other players' Radmin IPs (look like `26.x.x.x`, comma separated —
    one is enough) and a character.
@@ -87,6 +94,8 @@ ordered event channel (kills, transitions, pickups, …) and an enemy-state chan
 Technical journal: [MODLOG.md](MODLOG.md). Notes for continuing the work: [CONTINUE.md](CONTINUE.md).
 
 ### Build from source
+
+The exe installer: `ISCC.exe setup/HotlineMiamiCoop.iss` (Inno Setup 6) → `dist/HotlineMiami-Coop-Setup-v<ver>.exe`.
 
 ```
 zig cc -target x86-windows-gnu -shared -O2 -s -o hmnet.dll net/hmnet.c -lws2_32

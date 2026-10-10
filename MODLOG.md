@@ -220,3 +220,15 @@ partner is streamed over UDP and drawn as a ghost in your level. Later: kill syn
 - Verified with 4 labs (hm-lab1..4, ports 7787-7790, each configured with ONE other address): all four found each
   other, "connected to A, B, C" everywhere; F11/F10 moved all four; one owner per enemy; F9 in one lab -> 0 enemies
   in all four; lab3 died, lab1 pressed E -> lab3 revived.
+
+## Exe installer (2026-10-10)
+- A friend ran install.bat from "Code -> Download ZIP" of the repo: no build_mod.py next to install.py, no Python, no
+  hmnet.dll. install.py now falls back to <repo>/tools, hmnet.dll is tracked in git, missing files are reported first.
+- setup/HotlineMiamiCoop.iss (Inno Setup 6.7.3, installed via winget; ISCC at %LOCALAPPDATA%\Programs\Inno Setup 6):
+  per-user install to %LOCALAPPDATA%\HotlineMiamiCoop (no admin), pages: game folder (SteamPath registry +
+  libraryfolders.vdf detection), name + IPs (prefilled from the game's hmcoop.txt), character + windowed; then runs
+  python install.py <game> --batch --name --peer --skin [--windowed] --log install_log.txt (UTF-8 BOM for Inno).
+  Uninstaller runs install.py --uninstall --batch on the remembered game folder (installer.ini).
+  C# installer was flagged by Defender (NjRAT ML); the Inno one scanned clean.
+- Verified: GUI run against hm-lab4 (detected the real Steam folder first, prefilled FOURTH/peer/Son), build OK,
+  "Apps" entry; silent uninstall removed the mod files from the game folder and the app folder, kept hmcoop.txt.

@@ -1,7 +1,10 @@
 """Hotline Miami co-op installer: builds HotlineMiami_Coop.exe from the user's own game copy and
 writes hmcoop.txt.
 
-usage: install.py [game folder] [--uninstall] [--no-notepad]
+usage: install.py [game folder] [--uninstall]
+       install.py [game folder] --batch --name N --peer IP[,IP...] --skin S [--chance 50] [--windowed] [--log FILE]
+         (no questions: used by the exe installer; exit code 0 ok, 1 build failed, 2 game not found,
+          3 mod files missing)
 """
 import os
 import re
@@ -18,6 +21,29 @@ TOOLS = HERE if os.path.isfile(os.path.join(HERE, 'build_mod.py')) else os.path.
 sys.path.insert(0, TOOLS)
 STEAM = os.path.join(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'), 'Steam')
 MOD_FILES = ('HotlineMiami_Coop.exe', 'hmnet.dll', 'hmnet_log.txt', 'hmbgm.dll')
+SKINS = ['jacket', 'beard', 'richter', 'corey', 'jake', 'son', 'writer', 'pardo', 'henchman', 'random']
+OPTS = ('--name', '--peer', '--skin', '--chance', '--log')   # options that take a value
+BATCH = '--batch' in sys.argv
+
+
+def opt(name, default=None):
+    if name in sys.argv:
+        i = sys.argv.index(name)
+        if i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+    return default
+
+
+def positional():
+    out, skip = [], False
+    for a in sys.argv[1:]:
+        if skip:
+            skip = False
+        elif a in OPTS:
+            skip = True
+        elif not a.startswith('--'):
+            out.append(a)
+    return out
 
 
 def steam_roots():
@@ -71,6 +97,9 @@ def find_game(arg):
     for c in candidates:
         if c and os.path.isfile(os.path.join(c, 'HotlineMiami_Original.exe')):
             return c
+    if BATCH:
+        print('Не нашёл Hotline Miami (нет HotlineMiami_Original.exe): ' + (arg or 'папки Steam'))
+        sys.exit(2)
     print('Не нашёл Hotline Miami автоматически.')
     print('Steam: ПКМ по игре -> Управление -> Просмотреть локальные файлы, скопируй путь.')
     while True:
@@ -102,6 +131,8 @@ def find_hm2(game):
                         return w
         except OSError:
             pass
+    if BATCH:
+        return None
     print('Hotline Miami 2 не найдена автоматически.')
     print('Если она установлена: Steam -> ПКМ по Hotline Miami 2 -> Управление -> Просмотреть локальные файлы,')
     print('скопируй путь из адресной строки. Enter без пути - продолжить без скина Бороды.')
@@ -179,6 +210,27 @@ def configure(cfg_path, has_beard):
     print(f'Сохранено в {cfg_path}')
 
 
+def clean_peer(peer):
+    parts = [x.strip() for x in re.split(r'[,; ]+', peer or '') if x.strip()]
+    parts = [x for x in parts if re.fullmatch(r'[\w.\-]+(:\d+)?', x)]
+    return ','.join(x if ':' in x else x + ':7777' for x in parts[:3])
+
+
+def configure_batch(cfg_path, has_beard):
+    old = read_cfg(cfg_path)
+    name = re.sub(r'[^A-Za-z0-9_\-. ]', '', opt('--name', old.get('name', 'PLAYER')))[:15] or 'PLAYER'
+    peer = clean_peer(opt('--peer', old.get('peer', '')))
+    skin = opt('--skin', old.get('skin', 'jacket')).lower()
+    if skin not in SKINS:
+        skin = 'jacket'
+    if not has_beard and skin != 'jacket':
+        print('Hotline Miami 2 не найдена - персонажи из HM2 недоступны, будешь Джекетом.')
+    chance = opt('--chance', old.get('beard_chance', '50'))
+    with open(cfg_path, 'w', encoding='utf-8', newline='\r\n') as f:
+        f.write(f'port={old.get("port", "7777")}\npeer={peer}\nname={name}\nskin={skin}\nbeard_chance={chance}\n')
+    print(f'Сохранено в {cfg_path}: name={name} peer={peer} skin={skin}')
+
+
 def missing_files():
     need = [os.path.join(TOOLS, f) for f in ('build_mod.py', 'gm7.py', 'hm2_extract.py', 'beard_recolor.py', 'fix_bgm.py')]
     need.append(os.path.join(ROOT, 'hmnet.dll'))
@@ -186,6 +238,9 @@ def missing_files():
 
 
 def main():
+    log = opt('--log')
+    if log:
+        sys.stdout = sys.stderr = open(log, 'w', encoding='utf-8-sig', buffering=1)  # BOM: the exe installer reads it
     if '--uninstall' not in sys.argv and missing_files():
         print('Не хватает файлов мода:')
         for f in missing_files():
@@ -194,8 +249,8 @@ def main():
         print('Скорее всего скачаны исходники ("Code -> Download ZIP") или архив распакован не целиком.')
         print('Скачай готовый архив HotlineMiami-Coop-vX.zip из раздела Releases на GitHub,')
         print('распакуй его ЦЕЛИКОМ и запусти install.bat оттуда.')
-        return 1
-    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+        return 3
+    args = positional()
     game = find_game(args[0] if args else None)
     print(f'Игра: {game}')
 
@@ -209,14 +264,14 @@ def main():
 
     hm2 = find_hm2(game)
     print(f'Hotline Miami 2: {hm2 or "не найдена (скин Бороды будет недоступен)"}')
-    ans = input('Запускать в окне, а не на весь экран? (y/N): ').strip().lower()
+    ans = ('y' if '--windowed' in sys.argv else 'n') if BATCH else input('Запускать в окне, а не на весь экран? (y/N): ').strip().lower()
     cmd = [sys.executable, os.path.join(TOOLS, 'build_mod.py'),
            os.path.join(game, 'HotlineMiami_Original.exe'), os.path.join(game, 'HotlineMiami_Coop.exe')]
     cmd += ['--hm2', hm2] if hm2 else ['--no-hm2']
     if ans in ('y', 'yes', 'д', 'да'):
         cmd.append('--windowed')
     print('Собираю HotlineMiami_Coop.exe из твоей копии игры...', flush=True)
-    if subprocess.call(cmd) != 0:
+    if subprocess.call(cmd, stdout=sys.stdout, stderr=sys.stderr) != 0:
         print('Ошибка сборки. Оригинальные файлы игры не тронуты.')
         return 1
     shutil.copyfile(os.path.join(ROOT, 'hmnet.dll'), os.path.join(game, 'hmnet.dll'))
@@ -225,7 +280,10 @@ def main():
     from fix_bgm import fix_bgm
     fix_bgm(os.path.join(game, 'bgm.dll'), os.path.join(game, 'hmbgm.dll'))
     cfg = os.path.join(game, 'hmcoop.txt')
-    configure(cfg, bool(hm2))
+    if BATCH:
+        configure_batch(cfg, bool(hm2))
+    else:
+        configure(cfg, bool(hm2))
     print()
     print('Готово. В папке игры: HotlineMiami_Coop.exe, hmnet.dll, hmcoop.txt')
     print(f'Запуск: {os.path.join(game, "HotlineMiami_Coop.exe")}')
