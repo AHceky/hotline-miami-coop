@@ -236,3 +236,55 @@ partner is streamed over UDP and drawn as a ghost in your level. Later: kill syn
 - Shortcuts (2026-10-10): after a successful build the installer creates "Hotline Miami Co-op.lnk" in the Start menu
   and (task "desktopicon", on by default) on the desktop, target <game>\HotlineMiami_Coop.exe, working dir = game
   folder, game icon; removed by the uninstaller. Verified install -> both links correct -> uninstall -> gone.
+
+## v0.8 (2026-10-20): fixes from a review
+- Enemies react to the player they see: scrCoopHandoff scores every player on the floor as distance, +1000 when the
+  enemy cannot see them (farther than 240 or objSolid on the line; the game's scrSeePlayer uses 220), and hands the
+  enemy to the best one when 64 better than us. Lock (coop_lock, 60 frames after a take) now ticks down every frame in
+  scrCoopFollowState instead of in the handoff check (which only ran while we were alive on a floor with others).
+- Deaths: build_mod.hook_enemy_deaths replaces the game's instance_create(x,y,objDeadBody) /
+  instance_create(other.x,other.y,objDeadBody) (82 sites) with scrCoopBody(x,y,0|1), which tags the corpse with the
+  dying enemy's coop_uid (self, or other for door bashes); scrCoopCorpse uses that tag and falls back to the
+  nearest-vanished guess only for untagged corpses (player execution objects). A knocked-out enemy grabbed as a human
+  shield (scrKillShield / scrXboxPlayerKillShield) counts as dead at once (scrCoopShieldTaken); shield corpses are
+  pre-marked coop_seen.
+- R: the dead list keeps the room of each uid (coop_dead_room). On game_load (detected by net_tick vs coop_tick; note
+  the checkpoint is saved before scrCoopTrack sees the new room, so coop_room comes back as the previous room) with
+  nobody else connected in this room: that room's dead are forgotten (full restart like solo) and event 16 (room)
+  tells the others to forget them too. With someone on the floor the dead stay dead.
+- Ownership: conflicts are checked against every slot that sends the uid (new net_es_by(uid,slot)), not only the
+  first. A handoff (3) for a uid another slot claimed by hitting it (5) less than 800 ms ago is ignored (the 5 crossed
+  the 3 on the way: both would simulate it). Morph targets from the network must be enemy-family objects
+  (scrCoopFamilyObj). Family lists deduplicated (scrCoopTrack / scrCoopApplyDead use scrCoopWithFamily).
+- Weapons list (15): sent when a player newly appears in the room (connected, any state - a revive is not an arrival)
+  by whoever has been on the floor longest (rt, ties by rank), not by session rank.
+- Ghost masks: offsets cached per slot (gmx/gmy 2D arrays) instead of one coop_mspr for all ghosts.
+- hmnet.c (MOD_VERSION 80, enemy packets now HME5):
+  - packets carry only the events they have: up to 16 reliable + 8 unreliable (40 B each) after a 296-byte head;
+    idle packet 296 B instead of 616. net_uevent4 = unreliable broadcast (bullets 4 and 12; 12 only while together).
+  - enqueue only to peers already heard (their first packet resets the streams anyway); overflow is counted per peer,
+    net_event returns 0, net_overflow() and net_status report it; a full receive queue no longer acks the event.
+  - slots: configured flag; learned addresses that never answer are freed after 15 s, learned peers silent 60 s are
+    freed; when all slots are used a silent one (10 s) is taken for a new player; unanswered slots are only probed
+    every 15th send; another mod version gets no slot (reported from a separate record, any packet size).
+  - enemy state in pages of 48 (up to 4 = 192 enemies); a page counts while at most 4 sends old.
+  - session id mixes QueryPerformanceCounter and the address of a static (4 DLL copies in one process got equal
+    sessions); ports outside 1..65535 rejected; version shown as 0.8 / 0.61.
+  - HMNET_LOSS=<percent> drops outgoing datagrams (test aid).
+- net/test_hmnet.c: loads 4 copies of the DLL in one process on 127.0.0.1: mesh from one known address each (with a
+  typo address forcing slot reuse), 1500 reliable events in order, unreliable at most once, 150 enemies readable,
+  v0.7 packet reported without a slot. Passes at 0, 5, 20, 40 % loss.
+- tools/check_gml.py: every obj*/spr*/scr* name in gml/ must exist in the game (caught objPlayerShieldController,
+  which does not exist: GM7 only fails when the line runs). tools/make_release.py: DLL + test + fresh dist copies +
+  SHA256.txt + zip + installer. tools/echo_peer.py updated to the v0.8 layout (and acks events).
+- build_mod: HM2 extraction errors disable the HM2 skins instead of failing the build; patch points without a count
+  check now assert; known errors end with a "not a version the mod knows" message.
+- Debug builds read one command from coop_cmd.txt (any debug key name, E = revive, R = restart, N = stand next to the
+  nearest enemy): labs are driven without touching the keyboard (hm-tools/shots/lab.sh: build, start N, cmd, st, stop).
+- Verified in labs: 2 labs: kills from both sides via the corpse tag; R with the partner on the floor keeps 4 of 6
+  alive (2 stay dead), R alone brings back all 6; an enemy bullet arrives (ebul); N next to an enemy moves it to that
+  player and it attacks them. 4 labs: mesh of 4, kills in 3 different labs -> same count everywhere, revive via E,
+  kill after revive. 2 labs with HMNET_LOSS=15: transitions, kills, F9 all consistent. Echo partner connects and acks.
+  Lab4 lacked hmbgm.dll (made by the installer) -> "Error defining an external function" in objDevolver: lab setup,
+  not the mod.
+- Not verified: real PCs over Radmin, bosses/elevators, long fights with many handoffs.

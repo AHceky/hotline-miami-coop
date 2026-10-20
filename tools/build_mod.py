@@ -27,7 +27,8 @@ SCRIPTS = ['scrCoopInit', 'scrCoopKeyDirect', 'scrCoopSkin', 'scrCoopSkin1', 'sc
            'scrCoopDoors', 'scrCoopDialog', 'scrCoopSkinName', 'scrCoopSaveSkin', 'scrCoopSkinMenu',
            'scrCoopSkinMenuDraw', 'scrCoopDebugTalk', 'scrCoopSpawned', 'scrCoopDebugSpawn',
            'scrCoopWeaponTaken', 'scrCoopWeaponThrown', 'scrCoopReadCfg', 'scrCoopSaveCfg', 'scrCoopRevive',
-           'scrCoopReviveCheck', 'scrCoopShotInit', 'scrCoopShotStep', 'scrCoopPeers']
+           'scrCoopReviveCheck', 'scrCoopShotInit', 'scrCoopShotStep', 'scrCoopPeers', 'scrCoopFamilyObj',
+           'scrCoopBody', 'scrCoopShieldTaken', 'scrCoopApplyDeadOne', 'scrCoopForgetRoom', 'scrCoopAddDead']
 
 # HM1 player sprite -> HM2 Beard ("Nicke") sprite. Beard has fewer animations than Jacket, so
 # guns share the M16/shotgun/M60 sets and every melee weapon uses the knife set.
@@ -110,6 +111,7 @@ def reroute_direct_keys(g):
         if old in t:
             n += t.count(old)
             put(t.replace(old, new))
+    assert n > 0, n
     print(f'rerouted {n} keyboard_check_direct calls')
 
 
@@ -148,6 +150,7 @@ def skin_player_drawing(g):
     i, s = g.script('scrDrawMask')
     s.code = encode_code(b'if variable_global_exists("coop_skin") {if !scrCoopSkinMasked(global.coop_skin) exit}'
                          + bytes((13, 10)) + decode_code(s.code))
+    assert n > 0, n
     print(f'skinned drawing in {n} code blocks')
 
 
@@ -207,6 +210,31 @@ def sync_weapons(g):
     print(f'weapon pickups / throws synced ({n} hooks)')
 
 
+def hook_enemy_deaths(g):
+    """Corpses say which enemy died: the game's own instance_create(..,objDeadBody) goes through
+    scrCoopBody, which tags the corpse with the dying enemy's co-op identity (scrCoopCorpse used to guess
+    it from the nearest enemy that vanished). A knocked-out enemy grabbed as a human shield counts as
+    dead at once (scrCoopShieldTaken)."""
+    reps = [(b'instance_create(x,y,objDeadBody)', b'scrCoopBody(x,y,0)'),
+            (b'instance_create(other.x,other.y,objDeadBody)', b'scrCoopBody(other.x,other.y,1)')]
+    shield = re.compile(rb'(if sprite_index=sprPoliceGetUp global\.test=2 else \{\r?\nglobal\.test=1\r?\n)(instance_destroy\(\))')
+    n = ns = 0
+    for name, get, put in all_code(g):
+        t = get()
+        t2 = t
+        for a, b in reps:
+            n += t2.count(a)
+            t2 = t2.replace(a, b)
+        if name in ('scrKillShield', 'scrXboxPlayerKillShield'):
+            t2, k = shield.subn(rb'\1scrCoopShieldTaken() \2', t2)
+            ns += k
+        if t2 != t:
+            put(t2)
+    assert n >= 70, n
+    assert ns == 2, ns
+    print(f'enemy deaths tagged ({n} corpse spawns, {ns} human-shield grabs)')
+
+
 def descendants(g, root):
     names = [o.name.decode() if o else None for o in g.objects]
     out = []
@@ -235,6 +263,7 @@ def guard_enemy_ai(g):
                     if a.id == 603:
                         a.args[0] = guard + a.args[0]
                         n += 1
+    assert n > 50, n
     print(f'enemy AI guarded in {len(objs)} objects ({n} code blocks)')
 
 
@@ -253,6 +282,7 @@ def use_fixed_bgm(g):
         if old in t:
             n += t.count(old)
             put(t.replace(old, new))
+    assert n > 0, 'bgm.dll is not loaded by this game version'
     print(f'music DLL redirected to hmbgm.dll ({n} references)')
 
 
@@ -412,10 +442,18 @@ def main(src, dst, windowed=False, unmodified=False, hm2=None, debug=False):
     car_waits_for_partner(g)
     tag_spawned_enemies(g)
     sync_weapons(g)
+    hook_enemy_deaths(g)
     guard_enemy_ai(g)
     for name in SCRIPTS:
         g.add_script(name, gml(name + '.gml'))
-    g.add_script('scrCoopSkinInit', add_skins(g, hm2 if hm2 is not None else DEFAULT_HM2))
+    n_spr = len(g.new_sprites)
+    try:
+        skins = add_skins(g, hm2 if hm2 is not None else DEFAULT_HM2)
+    except Exception as e:  # an HM2 the extractor does not understand must not cost the whole mod
+        print(f'Hotline Miami 2 sprites could not be read ({type(e).__name__}: {e}): HM2 skins disabled')
+        del g.new_sprites[n_spr:]
+        skins = add_skins(g, None)
+    g.add_script('scrCoopSkinInit', skins)
 
     idx = g.add_object('objCoopNet', template, {
         (EV_CREATE, 0): gml('objCoopNet_create.gml'),
@@ -453,5 +491,15 @@ if __name__ == '__main__':
     if '--no-hm2' in argv:
         hm2 = ''
     args = [a for a in argv if not a.startswith('--')]
-    main(args[0], args[1], windowed='--windowed' in argv, unmodified='--unmodified' in argv, hm2=hm2,
-         debug='--debug' in argv)
+    try:
+        main(args[0], args[1], windowed='--windowed' in argv, unmodified='--unmodified' in argv, hm2=hm2,
+             debug='--debug' in argv)
+    except (AssertionError, ValueError, KeyError, IndexError, struct.error) as e:
+        # the patch points are checked against the Steam version of the game
+        import traceback
+        traceback.print_exc()
+        print()
+        print('This HotlineMiami_Original.exe is not a version the mod knows (it was made for the current')
+        print('Steam version). Check the game files in Steam (Properties -> Installed Files -> Verify) and')
+        print('install again. Details above: %s: %s' % (type(e).__name__, e))
+        sys.exit(1)

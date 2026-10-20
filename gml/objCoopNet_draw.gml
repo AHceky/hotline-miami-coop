@@ -15,7 +15,7 @@ draw_set_color(c_white)
 }
 
 if instance_exists(objTitle) scrCoopSkinMenuDraw()
-if external_call(global.__net_version_mismatch) {
+if external_call(global.__net_version_mismatch) or (external_call(global.__net_overflow) and (statustimer>0 or instance_exists(objTitle))) {
 draw_set_font(fntDate)
 draw_set_halign(fa_center)
 draw_set_color(c_black)
@@ -85,16 +85,22 @@ draw_sprite_ext(spr,img,gx[s],gy[s],xs,ys,ang,col,1)
 }
 // their mask: same offsets the game uses for that sprite (scrUpdateMaskPos), drawn like scrDrawMask
 if st=1 and external_call(global.__net_get,13)=1 and scrCoopSkinMasked(pskin) {
-var osp,lf,fi,md,dd,mx,my,mi;
+var osp,lf,fi,md,dd,mx,my,mi,k;
 osp=external_call(global.__net_get,4)
-if osp!=coop_mspr {coop_mspr=osp scrCoopMaskInit() if sprite_exists(osp) scrUpdateMaskPos(osp)}
+// offsets kept per ghost (gmx/gmy), recomputed only when that ghost's sprite changes
+if osp!=coop_gmspr[s] {
+coop_gmspr[s]=osp
+scrCoopMaskInit()
+if sprite_exists(osp) scrUpdateMaskPos(osp)
+for (k=0;k<100;k+=1) {gmx[s,k]=maskaddx[k] gmy[s,k]=maskaddy[k]}
+}
 lf=1
 if ys<0 lf=-1
 fi=floor(img)
 if fi<0 fi=0
 if fi>99 fi=99
-md=point_direction(0,0,maskaddx[fi],maskaddy[fi]*lf)+ang
-dd=point_distance(0,0,maskaddx[fi],maskaddy[fi]*lf)
+md=point_direction(0,0,gmx[s,fi],gmy[s,fi]*lf)+ang
+dd=point_distance(0,0,gmx[s,fi],gmy[s,fi]*lf)
 mx=lengthdir_x(dd,md)
 my=lengthdir_y(dd,md)
 mi=external_call(global.__net_get,14)

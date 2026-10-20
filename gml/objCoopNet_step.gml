@@ -16,22 +16,35 @@ eb=external_call(global.__net_ev_get,2)
 ec=external_call(global.__net_ev_get,3)
 ed=external_call(global.__net_ev_get,4)
 if et=1 {
-if ds_list_find_index(global.coop_dead,eb)<0 ds_list_add(global.coop_dead,eb)
+scrCoopAddDead(eb,ea)
 if ea=room scrCoopApplyDead()
 }
+// 16 = a player restarted that floor alone (R): its enemies are alive again
+if et=16 scrCoopForgetRoom(ea)
 if et=2 scrCoopFollow(ea,eb)
-// 3 = the partner hands us an enemy (room, uid, x*10000+y, alert)
+// 3 = the partner hands us an enemy (room, uid, x*10000+y, alert); ignored if a third player took it
+// by hitting it a moment ago (event 5 overtook the handoff)
 if et=3 and ea=room {
+c=ds_list_find_index(global.coop_claim_uid,eb)
+if c>=0 {if current_time-ds_list_find_value(global.coop_claim_t,c)>800 or external_call(global.__net_ev_get,5)=ds_list_find_value(global.coop_claim_s,c) c=-1}
+if c<0 {
 global.coop_k=eb
 global.coop_kx=floor(ec/10000)
 global.coop_ky=ec-global.coop_kx*10000
 global.coop_ka=ed
 scrCoopWithFamily(scrCoopTakeOne)
 }
+}
 // 5 = the partner took over an enemy by hitting it (room, uid)
 if et=5 and ea=room {
 global.coop_k=eb
 scrCoopWithFamily(scrCoopYieldOne)
+c=ds_list_find_index(global.coop_claim_uid,eb)
+if c>=0 {ds_list_delete(global.coop_claim_uid,c) ds_list_delete(global.coop_claim_t,c) ds_list_delete(global.coop_claim_s,c)}
+ds_list_add(global.coop_claim_uid,eb)
+ds_list_add(global.coop_claim_t,current_time)
+ds_list_add(global.coop_claim_s,external_call(global.__net_ev_get,5))
+if ds_list_size(global.coop_claim_uid)>32 {ds_list_delete(global.coop_claim_uid,0) ds_list_delete(global.coop_claim_t,0) ds_list_delete(global.coop_claim_s,0)}
 }
 // 4 = a bullet fired by an enemy the partner simulates (room, x*10000+y, direction, speed)
 if et=4 and ea=room {
@@ -119,18 +132,28 @@ scrCoopDoors()
 scrCoopDialog()
 scrCoopSkinMenu()
 scrCoopReviveCheck()
-// weapons on the floor get random types in each game: whenever another player arrives on this floor,
-// the most senior player here (wins every tie-break) sends their list and the others copy it (event 15)
-var s;
-if coop_rt<5 coop_wn=0
-if global.coop_ninroom>coop_wn {
+// weapons on the floor get random types in each game: when another player arrives on this floor, the
+// player who has been here longest (ties: rank) sends their list and the others copy it (event 15).
+// Arriving = connected and in this room, alive or not (a revive is not an arrival).
+var s,arr;
+arr=0
+for (s=0;s<global.coop_npeers;s+=1) {
+c=0
+if global.coop_pok[s] and global.coop_proom[s]=room c=1
+if coop_rt<5 coop_wpres[s]=0
+if c=1 and coop_wpres[s]=0 arr=1
+coop_wpres[s]=c
+}
+if arr=1 {
 global.coop_k=1
-for (s=0;s<global.coop_npeers;s+=1) {if global.coop_pin[s] and global.coop_prank[s]=0 global.coop_k=0}
+for (s=0;s<global.coop_npeers;s+=1) {if coop_wpres[s]=1 {
+if global.coop_prt[s]>coop_rt+30 global.coop_k=0
+else if global.coop_prt[s]+30>=coop_rt and global.coop_prank[s]=0 global.coop_k=0
+}}
 if global.coop_k=1 with objWeapon external_call(global.__net_event4,15,room,floor(max(0,x))*10000+floor(max(0,y)),image_index,ammo)
 }
-coop_wn=global.coop_ninroom
-// our bullets: the partner sees them fly (event 12)
-with objBullet {if !variable_local_exists("coop_seen") {coop_seen=1 external_call(global.__net_event4,12,room,floor(max(0,x))*10000+floor(max(0,y)),direction,speed)}}
+// our bullets: the others on this floor see them fly (event 12, unreliable: a lost one is just not drawn)
+with objBullet {if !variable_local_exists("coop_seen") {coop_seen=1 if global.coop_together=1 external_call(global.__net_uevent4,12,room,floor(max(0,x))*10000+floor(max(0,y)),direction,speed)}}
 // dead and waiting to be revived: a player alive on this floor simulates our enemies meanwhile
 if !instance_exists(objPlayer) and instance_exists(objPlayerDead) and global.coop_ninroom>0 and coop_t mod 20=0 {
 global.coop_gslot=-1

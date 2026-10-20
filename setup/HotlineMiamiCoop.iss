@@ -4,7 +4,7 @@
 ; asks for the game folder, name, other players' IPs and character, then runs
 ; tools\install.py --batch, which builds HotlineMiami_Coop.exe from the player's own game copy.
 
-#define AppVer "0.7"
+#define AppVer "0.8"
 
 [Setup]
 AppId={{27CF4983-360A-4E43-ABD7-2843BE075C18}

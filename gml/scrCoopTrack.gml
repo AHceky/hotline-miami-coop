@@ -1,10 +1,14 @@
 // Kill sync, run from objCoopNet's end step.
 // Every enemy keeps one co-op identity (coop_uid = its room-placed instance id) through the
 // game's transforms (enemy -> knocked out -> gets up as a new instance, bash/kick animations).
-// An identity is declared dead when a corpse appears where it vanished; deaths go to the partner.
-var tk,i,n,d;
+// An identity is declared dead when a corpse made for it appears (scrCoopBody / scrCoopCorpse); deaths
+// go to the others.
+var tk,i,n,d,c,s,ld;
 tk=external_call(global.__net_tick)
-if room!=coop_room or tk-coop_tick>2 {
+// game_load rewinds coop_tick (and coop_room: the checkpoint is saved as the floor starts, before this
+// script has seen the new room)
+ld=(tk-coop_tick>2)
+if room!=coop_room or ld {
 // new room, or game_load rewound every variable: start over without reporting anything
 ds_list_clear(global.coop_trk_id)
 ds_list_clear(global.coop_trk_uid)
@@ -19,8 +23,21 @@ ds_list_clear(global.coop_van_own)
 if room!=coop_room {
 coop_sent_trans=0
 coop_rt=0
-// left the level (menus, apartment, cutscenes): forget which enemies are dead
-if !instance_exists(objEffector) or instance_exists(objEffectorHouse) ds_list_clear(global.coop_dead)
+}
+if !instance_exists(objEffector) or instance_exists(objEffectorHouse) {
+// not in a level (menus, apartment, cutscenes): forget which enemies are dead
+ds_list_clear(global.coop_dead)
+ds_list_clear(global.coop_dead_room)
+} else if ld {
+// R (restart from the floor's checkpoint): with someone else on this floor the floor stays as they
+// have it (the dead stay dead); alone, it starts over like in the normal game, and the others forget
+// this floor's dead too, so it is the same for them when they come here
+c=0
+for (s=0;s<global.coop_npeers;s+=1) {if global.coop_pok[s] and global.coop_proom[s]=room c=1}
+if c=0 {
+scrCoopForgetRoom(room)
+external_call(global.__net_event,16,room,0,0)
+}
 }
 coop_room=room
 }
@@ -39,15 +56,7 @@ ds_list_add(global.coop_van_own,ds_list_find_value(global.coop_trk_own,i))
 }
 
 // new enemy-family instances adopt a vanished identity nearby, or take their own id
-with objEnemy scrCoopTag()
-with objKnockedOut scrCoopTag()
-with objECrawl scrCoopTag()
-with objSwatKnockedOut scrCoopTag()
-with objSubwayKnockedOut scrCoopTag()
-with objHoboKnockedOut scrCoopTag()
-with objEHideM16 scrCoopTag()
-with objESubwayStatic scrCoopTag()
-with objBodyguardCrawl scrCoopTag()
+scrCoopWithFamily(scrCoopTag)
 
 // new corpses resolve vanished identities as dead
 with objDeadBody scrCoopCorpse()
@@ -64,12 +73,4 @@ ds_list_clear(global.coop_trk_uid)
 ds_list_clear(global.coop_trk_x)
 ds_list_clear(global.coop_trk_y)
 ds_list_clear(global.coop_trk_own)
-with objEnemy scrCoopTrackAdd()
-with objKnockedOut scrCoopTrackAdd()
-with objECrawl scrCoopTrackAdd()
-with objSwatKnockedOut scrCoopTrackAdd()
-with objSubwayKnockedOut scrCoopTrackAdd()
-with objHoboKnockedOut scrCoopTrackAdd()
-with objEHideM16 scrCoopTrackAdd()
-with objESubwayStatic scrCoopTrackAdd()
-with objBodyguardCrawl scrCoopTrackAdd()
+scrCoopWithFamily(scrCoopTrackAdd)

@@ -1,17 +1,22 @@
 // (enemy) copy another player's simulation of this enemy when they own it
 if !variable_local_exists("coop_uid") exit
 if !variable_local_exists("coop_own") coop_own=1
+if !variable_local_exists("coop_lock") coop_lock=0
+if coop_lock>0 coop_lock-=1
 var o,tx,ty,s,ps;
 o=external_call(global.__net_es_get,coop_uid,0)
 if coop_own=1 {
 if o=-100000 exit
-if variable_local_exists("coop_lock") {if coop_lock>0 exit}
-// two players simulate it: whoever arrived on this floor later gives way, ties go by rank
-ps=external_call(global.__net_es_get,coop_uid,7)
+if coop_lock>0 exit
+// others simulate it too: give way to anyone who has been on this floor longer (ties go by rank)
+for (ps=0;ps<global.coop_npeers;ps+=1) {
+if external_call(global.__net_es_by,coop_uid,ps) {
 if global.coop_myrt+30<global.coop_prt[ps] coop_own=0
-else if global.coop_prt[ps]+30<global.coop_myrt exit
-else if global.coop_prank[ps]=1 exit
-else coop_own=0
+else if global.coop_prt[ps]+30<global.coop_myrt s=0
+else if global.coop_prank[ps]=0 coop_own=0
+}
+}
+if coop_own=1 exit
 }
 if o=-100000 {
 // nobody simulates it any more (its owner left the floor or died): after 1.5 s we take it
@@ -22,8 +27,9 @@ exit
 }
 coop_orph=0
 if o!=object_index {
-// the partner's copy was knocked down / got up: become the same kind of object
-if object_exists(o) scrCoopMorph(o)
+// the owner's copy was knocked down / got up: become the same kind of object (enemy kinds only:
+// the number comes from the network)
+if scrCoopFamilyObj(o) scrCoopMorph(o)
 exit
 }
 tx=external_call(global.__net_es_get,coop_uid,1)

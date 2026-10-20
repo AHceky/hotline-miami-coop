@@ -32,6 +32,9 @@ global.__net_local=external_define(global.coop_dll,"net_local",dll_cdecl,ty_stri
 global.__net_set_peer=external_define(global.coop_dll,"net_set_peer",dll_cdecl,ty_real,1,ty_string)
 global.__net_set_name=external_define(global.coop_dll,"net_set_name",dll_cdecl,ty_real,1,ty_string)
 global.__net_version_mismatch=external_define(global.coop_dll,"net_version_mismatch",dll_cdecl,ty_real,0)
+global.__net_uevent4=external_define(global.coop_dll,"net_uevent4",dll_cdecl,ty_real,5,ty_real,ty_real,ty_real,ty_real,ty_real)
+global.__net_es_by=external_define(global.coop_dll,"net_es_by",dll_cdecl,ty_real,2,ty_real,ty_real)
+global.__net_overflow=external_define(global.coop_dll,"net_overflow",dll_cdecl,ty_real,0)
 global.coop_ok=external_call(global.__net_start,working_directory+"\hmcoop.txt")
 
 global.coop_trk_id=ds_list_create()
@@ -43,8 +46,14 @@ global.coop_van_x=ds_list_create()
 global.coop_van_y=ds_list_create()
 global.coop_van_age=ds_list_create()
 global.coop_dead=ds_list_create()
+global.coop_dead_room=ds_list_create()
 global.coop_trk_own=ds_list_create()
 global.coop_van_own=ds_list_create()
+// enemies another player took by hitting them (event 5), and when: a handoff of one of those that
+// crossed it on the way is ignored, so two players never both simulate it
+global.coop_claim_uid=ds_list_create()
+global.coop_claim_t=ds_list_create()
+global.coop_claim_s=ds_list_create()
 global.coop_together=0
 // other players: slots 0..np-1 (see scrCoopPeers)
 global.coop_npeers=external_call(global.__net_peers)

@@ -1,6 +1,6 @@
 # Hotline Miami 1 co-op mod — handoff for a new chat
 
-Current release: **v0.7** (`dist/HotlineMiami-Coop-v0.7.zip`). Full technical journal: `MODLOG.md` (read it first).
+Current release: **v0.8** (`dist/HotlineMiami-Coop-v0.8.zip`, built by `tools/make_release.py`). Full technical journal: `MODLOG.md` (read it first).
 
 Repo: https://github.com/AHceky/hotline-miami-coop (private). Release zips go to GitHub Releases
 (`gh release create vX dist/HotlineMiami-Coop-vX.zip`); gh is at "C:\Program Files\GitHub CLI\gh.exe".
@@ -15,7 +15,7 @@ Repo: https://github.com/AHceky/hotline-miami-coop (private). Release zips go to
 - `tools/gm7.py` — GM7 exe reader/writer (byte-exact round trip). `tools/build_mod.py` — the patcher.
   `tools/hm2_extract.py` — HM2 wad/atlas reader. `tools/echo_peer.py` — fake partner for solo tests.
 - `gml/*.gml` — all injected GML (objCoopNet events, scrCoop* scripts). `objCoopNet_debug*.gml` only with `--debug`.
-- `net/hmnet.c` — the DLL source (protocol HMC3 + enemy packets HME3).
+- `net/hmnet.c` — the DLL source (protocol HMC4 v0.8 + enemy pages HME5), `net/test_hmnet.c` — its protocol test.
 - `installer/*.cs` — C# WinForms installer: works, but Defender flags it (NjRAT ML false positive) — NOT shipped.
 - `dist/HotlineMiami-Coop/` — what users get: `install.bat` (bundled embeddable Python 3.13.6 in `python/`),
   `tools/`, `gml/`, `hmnet.dll`, README.txt (Russian). Zip it to release.
@@ -37,6 +37,11 @@ Copy exe + hmnet.dll to both labs, start lab1 then lab2, place windows side by s
 Debug keys (host window): F11 jump both to chapter 1 (start the client's game first so globals exist),
 F10 take exit arrow, F9 kill all, F8 kill nearest, F6 give my enemies, F5 knock out nearest, F4 enemy shot,
 F12 jump both to the metro briefcase room, B push the nearest door, M spawn an enemy from a door on both, J metro entrance with done=1 (fragile), K pick up nearest weapon, X die, G go to partner, E revive (real key); F2 test conversation on both, F7 move onto the nearest knocked-out enemy (then Space = execution), F3 level done + sit in the car. Overlay shows enemies/ko/own/puppet/together/rank/rxbullets.
+
+## Driving the labs without the keyboard
+Debug builds read one command from `coop_cmd.txt` next to the exe (a debug key name like F8, or E / R / N) and
+write their state to `coop_dbg.txt`. `. hm-tools/shots/lab.sh` then `build`, `start 2`, `cmd 1 F11 8`, `cmd 1 F10 8`,
+`st 1 2`, `stop`. `export HMNET_LOSS=15` before `start` simulates a bad link. Every lab needs hmbgm.dll.
 
 ## Gotchas learned
 - Debug builds write coop_dbg.txt next to the exe twice a second (room, player, weapons with type@pos, partner
