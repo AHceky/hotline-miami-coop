@@ -1,8 +1,8 @@
-# Hotline Miami — Co-op mod
+# Hotline Miami - Co-op mod
 
 [Русская версия](README.ru.md)
 
-Online co-op for **2–4 players** in **Hotline Miami 1** (Steam, the GameMaker 7 `HotlineMiami_Original.exe`).
+Online co-op for **2-4 players** in **Hotline Miami 1** (Steam, the GameMaker 7 `HotlineMiami_Original.exe`).
 Each player runs their own game; the mod links the games over UDP (Radmin VPN, ZeroTier or a LAN)
 and keeps the world in sync.
 
