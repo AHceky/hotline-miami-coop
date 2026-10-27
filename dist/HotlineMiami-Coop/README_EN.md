@@ -1,4 +1,4 @@
-# Hotline Miami — Co-op mod
+# Hotline Miami - Co-op mod
 
 [Русская версия](README.ru.md)
 
@@ -51,18 +51,18 @@ uninstaller to Windows "Apps". (Windows SmartScreen may warn about an unknown pu
 
 1. Download the release zip and unpack it **completely** anywhere (not "Code → Download ZIP").
 2. Run `install.bat`. It finds the games in Steam, builds `HotlineMiami_Coop.exe` next to the game and
-   asks for your name, the other players' Radmin IPs (look like `26.x.x.x`, comma separated —
+   asks for your name, the other players' Radmin IPs (look like `26.x.x.x`, comma separated -
    one is enough) and a character.
-   Python is bundled (official embeddable build from python.org) — nothing to install.
+   Python is bundled (official embeddable build from python.org) - nothing to install.
 3. Uninstall: `uninstall.bat`.
 
 ## Play
 
 1. Both start `HotlineMiami_Coop.exe` from the game folder (Steam running). If the game asks
    "Enable Steamworks?", answer **No**.
-2. Top left of the menu: `CO-OP: connected to <name>` — you are linked.
+2. Top left of the menu: `CO-OP: connected to <name>` - you are linked.
 3. Main menu keys: **C** character (Shift+C back), **N** your name, **I** other players' IPs. Your
-   own Radmin / LAN address is shown there — tell it to the others.
+   own Radmin / LAN address is shown there - tell it to the others.
 4. Pick the same chapter. When you are on the same floor you see each other.
 
 The game keeps running when its window is not focused (otherwise the partner would freeze), but it
