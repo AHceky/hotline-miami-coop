@@ -1,4 +1,4 @@
-# Hotline Miami 1 — ghost co-op mod (MODLOG)
+# Hotline Miami 1 - ghost co-op mod (MODLOG)
 
 ## Goal
 Option 1 "ghost co-op": each player runs their own game; position/rotation/sprite/weapon of the
@@ -47,7 +47,7 @@ partner is streamed over UDP and drawn as a ghost in your level. Later: kill syn
 - Not verified: fullscreen build, Steamworks=YES, two real PCs over Radmin.
 - Dist: hm-coop/dist/HotlineMiami-Coop (+zip). install.bat -> tools/install.py -> build_mod.py.
 
-## v0.2 (skins, enemy + transition sync) — verified with two instances (host Jacket, client Beard)
+## v0.2 (skins, enemy + transition sync) - verified with two instances (host Jacket, client Beard)
 - Protocol HMC2: state + reliable ordered events (ids, acks, 8 per packet, session id resets on restart).
 - Enemy identity: coop_uid = room-placed instance id, carried through transforms by adopting the
   nearest vanished uid (<48 px). Death = new objDeadBody/objDeadBurning within 56 px of a vanished uid.
