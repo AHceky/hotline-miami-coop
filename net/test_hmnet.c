@@ -49,16 +49,16 @@ static void load(Net *n, const char *dir, int k) {
     G(uevent4, "net_uevent4"); G(es_add, "net_es_add");
 }
 
-static void cfg(Net *n, int k, const char *peers) {
+static void cfg(Net *n, int k, const char *peers, const char *room) {
     char path[MAX_PATH];
     snprintf(path, sizeof path, "%s\\hmnet_test%d.txt", getenv("TEMP"), k);
     FILE *f = fopen(path, "w");
-    fprintf(f, "port=%d\npeer=%s\nname=P%d\n", 17001 + k, peers, k);
+    fprintf(f, "port=%d\npeer=%s\nname=P%d\nroom=%s\n", 17001 + k, peers, k, room);
     fclose(f);
     n->start(path);
 }
 
-static Net net[4];
+static Net net[5];
 // per receiver: next expected reliable value from each sender, unreliable seen
 static int next_rel[4][4], urel_seen[4][4][2000], urel_dup = 0, rel_bad = 0;
 
@@ -102,12 +102,13 @@ int main(int argc, char **argv) {
     SetEnvironmentVariableA("HMNET_LOSS", lv);
     _putenv_s("HMNET_LOSS", lv);
     printf("hmnet protocol test, %d%% loss\n", loss);
-    for (int k = 0; k < 4; k++) load(&net[k], dir, k);
+    for (int k = 0; k < 5; k++) load(&net[k], dir, k);
     // each player knows one other address; player 0 also has a typo'd address (nobody there)
-    cfg(&net[0], 0, "127.0.0.1:17002,127.0.0.1:17999");
-    cfg(&net[1], 1, "");
-    cfg(&net[2], 2, "127.0.0.1:17002");
-    cfg(&net[3], 3, "127.0.0.1:17003");
+    // the room code is compared without spaces and case: all four have the same one
+    cfg(&net[0], 0, "127.0.0.1:17002,127.0.0.1:17999", "Test Room");
+    cfg(&net[1], 1, "", "testroom");
+    cfg(&net[2], 2, "127.0.0.1:17002", "TEST ROOM");
+    cfg(&net[3], 3, "127.0.0.1:17003", "test room");
 
     // the fourth player can only get a slot at player 0 once the dead typo slot may be reused (10 s)
     int t, all = 0;
@@ -184,6 +185,12 @@ int main(int argc, char **argv) {
     CHECK(net[0].mismatch() == 1, "other mod version reported");
     CHECK(connected(&net[0], 3) == 3, "...and it took no slot (still 3 connected)");
     closesocket(s);
+
+    // a fifth player with another room code knocks at player 0: told, but joins nobody
+    cfg(&net[4], 4, "127.0.0.1:17001", "other");
+    for (t = 0; t < 300; t++) { step(4); net[4].poll(); net[4].send(); }
+    CHECK(net[0].mismatch() == 1, "another room code reported");
+    CHECK(connected(&net[0], 3) == 3 && connected(&net[4], 3) == 0, "...and it joined nobody");
 
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return fails ? 1 : 0;

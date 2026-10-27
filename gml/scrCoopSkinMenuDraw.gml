@@ -1,5 +1,5 @@
 // (objCoopNet draw) title screen: the chosen character walking, the co-op settings and how to change them
-var px,py,spr,leg,fr,m0,m1,m2,loc;
+var px,py,spr,leg,fr,m0,m1,m2,m3,loc;
 px=view_xview[0]+28
 py=view_yview[0]+view_hview[0]-28
 spr=scrCoopSkin(sprPWalkUnarmed,global.coop_skin)
@@ -16,12 +16,15 @@ draw_set_halign(fa_left)
 m0="CHARACTER: "+string_upper(scrCoopSkinName(global.coop_skin))+"   (C - CHANGE)"
 m1="NAME: "+string_upper(global.coop_name)+" (N)    PLAYERS: "+global.coop_peerstr+" (I)"
 m2="YOUR RADMIN / LAN IP: "+loc
+if global.coop_room="" m3="ROOM CODE: NONE (K)" else m3="ROOM CODE: "+string_upper(global.coop_room)+" (K)"
 draw_set_color(c_black)
 draw_text(px+25,py-7,m0)
 draw_text(view_xview[0]+9,view_yview[0]+25,m1)
 draw_text(view_xview[0]+9,view_yview[0]+41,m2)
+draw_text(view_xview[0]+9,view_yview[0]+57,m3)
 draw_set_color(make_color_rgb(255,200,80))
 draw_text(px+24,py-8,m0)
 draw_text(view_xview[0]+8,view_yview[0]+24,m1)
 draw_text(view_xview[0]+8,view_yview[0]+40,m2)
+draw_text(view_xview[0]+8,view_yview[0]+56,m3)
 draw_set_color(c_white)

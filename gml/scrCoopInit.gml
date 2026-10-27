@@ -35,6 +35,7 @@ global.__net_version_mismatch=external_define(global.coop_dll,"net_version_misma
 global.__net_uevent4=external_define(global.coop_dll,"net_uevent4",dll_cdecl,ty_real,5,ty_real,ty_real,ty_real,ty_real,ty_real)
 global.__net_es_by=external_define(global.coop_dll,"net_es_by",dll_cdecl,ty_real,2,ty_real,ty_real)
 global.__net_overflow=external_define(global.coop_dll,"net_overflow",dll_cdecl,ty_real,0)
+global.__net_set_room=external_define(global.coop_dll,"net_set_room",dll_cdecl,ty_real,1,ty_string)
 global.coop_ok=external_call(global.__net_start,working_directory+"\hmcoop.txt")
 
 global.coop_trk_id=ds_list_create()
@@ -89,9 +90,12 @@ if global.coop_skin_ok[global.coop_skin]=0 global.coop_skin=0
 global.coop_focus=1
 global.coop_peerstr=scrCoopReadCfg("peer")
 global.coop_name=scrCoopReadCfg("name")
+global.coop_room=scrCoopReadCfg("room")
 global.coop_incar=0
 global.coop_cargo=0
 global.coop_cargoroom=-1
 global.coop_dbg_b=0
+// 1 only while a kill another player just made is applied: the enemy drops its gun like in their game
+global.coop_drop=0
 }
 if !instance_exists(objCoopNet) instance_create(0,0,objCoopNet)

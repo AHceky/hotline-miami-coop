@@ -24,4 +24,5 @@ a=0
 if variable_local_exists("alert") a=alert
 external_call(global.__net_event4_to,best,3,room,coop_uid,floor(max(0,x))*10000+floor(max(0,y)),a)
 coop_own=0
+coop_orph=0
 }

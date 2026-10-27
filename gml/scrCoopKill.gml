@@ -1,5 +1,6 @@
-// (enemy instance) dies because the partner killed it: leave a corpse and whatever the game's own
-// death code would drop (weapon, the metro briefcase), no score
+// (enemy instance) dies because another player killed it: leave a corpse and whatever the game's own
+// death code would drop (the metro briefcase; its gun only if global.coop_drop: a kill happening now,
+// not the dead list applied again after R or on coming back to a floor), no score
 var c;
 c=instance_create(x,y,objDeadBody)
 c.coop_seen=1
@@ -24,7 +25,7 @@ c.friction=0.1
 }
 
 // armed enemies drop their gun, as in objEnemy's death code
-if object_get_parent(object_index)=objEnemy or object_index=objEnemy {
+if global.coop_drop=1 and (object_get_parent(object_index)=objEnemy or object_index=objEnemy) {
 if object_index!=objDogPatrol and sprite_index!=sprEWalkUnarmed and sprite_index!=sprEGiveUp and variable_local_exists("ammo") {
 c=instance_create(x,y,objWeaponThrow)
 c.image_index=scrCurrentWeaponExt(sprite_index)

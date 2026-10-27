@@ -23,6 +23,8 @@
 //   name=P1                         shown above your ghost on the other screens
 //   skin=jacket                     jacket | beard | richter | corey | jake | son | writer | pardo | henchman | random
 //   beard_chance=50                 percent, for skin=random
+//   room=word                       room code, the same for every player (empty = none): packets with
+//                                   another code are ignored, so strangers on the network cannot join
 
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -32,13 +34,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
+#include <ctype.h>
 
 #define EXPORT __declspec(dllexport) double __cdecl
 #define NFIELDS 32
 #define MAGIC 0x34434D48u  /* "HMC4": state + events (carries the mod version, kept from now on) */
 #define EMAGIC 0x35454D48u /* "HME5": enemy state page */
 #define PMAGIC 0x34504D48u /* "HMP4": addresses of the other peers we know */
-#define MOD_VERSION 80     /* v0.8: compared with the peers', a difference is reported */
+#define MOD_VERSION 90     /* v0.9: compared with the peers', a difference is reported */
 #define MAXP 3             /* peers (players besides us) */
 #define ES_PAGE 48         /* enemies per enemy-state packet */
 #define ES_PAGES 4         /* -> up to 192 enemies sent */
@@ -52,6 +55,8 @@
 #define GIVEUP_SILENT 15000  /* ms: a learned address that never answered is forgotten */
 #define GIVEUP_GONE 60000    /* ms: a learned peer silent this long is forgotten */
 #define REUSE_AFTER 10000    /* ms: a silent slot may be taken by a new player when all are used */
+#define REL_PER_POLL 64      /* reliable events taken from one peer per net_poll (the rest come again) */
+#define UNREL_PER_POLL 32    /* unreliable events taken from one peer per net_poll (the rest are dropped) */
 
 #pragma pack(push, 1)
 typedef struct {
@@ -65,6 +70,8 @@ typedef struct {
     unsigned int modver;   // MOD_VERSION of the sender
     unsigned int session;  // random per game launch: a restarted peer resets its event streams
     unsigned int seq;
+    unsigned int room;     // hash of the room code (0 = none): other codes are ignored
+    unsigned int ack_session;  // our session as the sender knows it: "ack" is about that stream only
     char name[16];
     double f[NFIELDS];
     unsigned int ack;    // highest in-order event id we have delivered from this peer
@@ -85,6 +92,7 @@ typedef struct {
 typedef struct {
     unsigned int magic;
     unsigned int session;
+    unsigned int room;
     unsigned int seq;
     unsigned int count;
     unsigned short page, npages;
@@ -95,6 +103,7 @@ typedef struct {
 typedef struct {
     unsigned int magic;
     unsigned int session;
+    unsigned int room;
     unsigned int count;
     struct { unsigned int ip; unsigned short port; } a[MAXP];
 } PPacket;
@@ -124,10 +133,12 @@ typedef struct {
     DWORD es_rx_time;
     int es_have;
     unsigned long n_rx;
+    int poll_rel, poll_unrel;  // events taken in the current net_poll
 } Peer;
 
-// a different mod version heard recently (a slot is not given to such a sender)
-static struct { struct sockaddr_in addr; int modver; DWORD t; unsigned long n; } mism;
+// a different mod version / room code heard recently (a slot is not given to such a sender)
+static struct { struct sockaddr_in addr; int modver; DWORD t; unsigned long n; } mism, wrongroom;
+static unsigned int room_hash = 0;  // our room code, hashed (0 = none)
 
 typedef struct {
     Event e;
@@ -165,6 +176,19 @@ static int xsend(const void *buf, int len, const struct sockaddr *to, int tolen)
 }
 
 static int mism_recent(void) { return mism.n && GetTickCount() - mism.t < 3000; }
+static int wrongroom_recent(void) { return wrongroom.n && GetTickCount() - wrongroom.t < 3000; }
+
+// room code -> 32-bit FNV-1a of the trimmed, lower-case text; 0 for no code
+static unsigned int room_of(const char *code) {
+    unsigned int h = 2166136261u;
+    int any = 0;
+    for (const unsigned char *c = (const unsigned char *)code; *c; c++) {
+        if (*c <= ' ') continue;
+        h = (h ^ (unsigned char)tolower(*c)) * 16777619u;
+        any = 1;
+    }
+    return any ? (h ? h : 1) : 0;
+}
 
 static int alive(const Peer *p) { return p->used && p->have_in && GetTickCount() - p->last_rx < 3000; }
 
@@ -197,6 +221,9 @@ static void write_log(void) {
         fprintf(f, "WARNING: %s:%d has mod v%s (%lu packets ignored) - install the same version on every PC\n",
                 inet_ntoa(mism.addr.sin_addr), ntohs(mism.addr.sin_port), mism.modver ? v : "<0.6", mism.n);
     }
+    if (wrongroom.n)
+        fprintf(f, "WARNING: %s:%d uses another room code (%lu packets ignored) - set the same room= on every PC\n",
+                inet_ntoa(wrongroom.addr.sin_addr), ntohs(wrongroom.addr.sin_port), wrongroom.n);
     fclose(f);
 }
 
@@ -274,6 +301,10 @@ static void reset_streams(Peer *p) {
     p->rx_next = 1;
     p->have_in = 0;
     p->es_have = 0;
+    p->es_npages = 0;
+    p->es_last_seq = 0;
+    memset(p->es_pg_seq, 0, sizeof p->es_pg_seq);
+    memset(p->es_pg_cnt, 0, sizeof p->es_pg_cnt);
     // drop undelivered events from this peer's previous session
     int k = 0;
     for (int i = 0; i < in_count; i++) {
@@ -296,7 +327,8 @@ static int reusable(const Peer *p, DWORD now) {
     return p->have_in ? now - p->last_rx > REUSE_AFTER : now - p->added > REUSE_AFTER;
 }
 
-// slot for this address: existing, or a free one (learned peer); -1 if full / it is us
+// slot for this address: existing, or a free one (learned peer); -1 if full / it is us.
+// add: 0 = existing only, 1 = may also reuse a dead slot, 2 = free slots only
 static int slot_for(const struct sockaddr_in *a, int add) {
     for (int i = 0; i < MAXP; i++)
         if (peers[i].used && same_addr(&peers[i].addr, a)) return i;
@@ -306,9 +338,9 @@ static int slot_for(const struct sockaddr_in *a, int add) {
     for (int i = 0; i < MAXP && s < 0; i++)
         if (!peers[i].used) s = i;
     // all used: take a dead one, learned addresses first
-    for (int i = 0; i < MAXP && s < 0; i++)
+    for (int i = 0; i < MAXP && s < 0 && add == 1; i++)
         if (!peers[i].configured && reusable(&peers[i], now)) s = i;
-    for (int i = 0; i < MAXP && s < 0; i++)
+    for (int i = 0; i < MAXP && s < 0 && add == 1; i++)
         if (reusable(&peers[i], now)) s = i;
     if (s < 0) return -1;
     if (peers[s].used) free_slot(&peers[s]);
@@ -381,6 +413,7 @@ EXPORT net_start(const char *cfgpath) {
                     if (!_stricmp(v, names[k])) skin_pref = k;
                 if (!_stricmp(v, "random")) skin_pref = -1;
             } else if (!strncmp(line, "beard_chance=", 13)) beard_chance = atof(line + 13);
+            else if (!strncmp(line, "room=", 5)) room_hash = room_of(line + 5);
         }
         fclose(f);
     }
@@ -405,6 +438,7 @@ EXPORT net_start(const char *cfgpath) {
         sock = INVALID_SOCKET;
         return -3;
     }
+    out.room = room_hash;
     const char *lp = getenv("HMNET_LOSS");
     if (lp) { loss_pct = atoi(lp); srand(GetTickCount() ^ GetCurrentProcessId()); }
     find_local_addrs();
@@ -426,6 +460,7 @@ static void send_gossip(void) {
         memset(&pp, 0, sizeof pp);
         pp.magic = PMAGIC;
         pp.session = out.session;
+        pp.room = room_hash;
         for (int i = 0; i < MAXP; i++) {
             if (i == t || !alive(&peers[i])) continue;
             pp.a[pp.count].ip = peers[i].addr.sin_addr.s_addr;
@@ -449,6 +484,7 @@ EXPORT net_send(void) {
         // nobody answers there (yet): knock a few times a second only
         if (!alive(p) && (n_send + i) % PROBE_EVERY) continue;
         out.ack = p->rx_next - 1;
+        out.ack_session = p->session;
         unsigned int n = 0;
         for (unsigned int id = p->out_first; id < p->out_next && n < EV_REL; id++, n++)
             out.ev[n] = p->outq[id % EV_QUEUE];
@@ -477,19 +513,31 @@ static void deliver(int slot, const Event *e, unsigned int session) {
     in_count++;
 }
 
+// acks and reliable events: from any packet of this session, late ones too (ids dedupe them)
 static void take_events(Peer *p, int slot, const Packet *pk) {
-    // peer acknowledged our events up to pk->ack
-    while (p->out_first < p->out_next && (int)(pk->ack - p->out_first) >= 0) p->out_first++;
+    // peer acknowledged our events up to pk->ack (an ack about an earlier session of ours means nothing)
+    if (pk->ack_session == out.session)
+        while (p->out_first < p->out_next && (int)(pk->ack - p->out_first) >= 0) p->out_first++;
     for (unsigned int k = 0; k < pk->nev; k++) {
         const Event *e = &pk->ev[k];
         if (e->id != p->rx_next) continue;  // duplicate or out of order: it will be resent
-        if (in_count >= EV_QUEUE) break;     // GML is not reading: not acked, so it comes again
+        // GML is not reading, or this peer floods us: not acked, so it comes again later
+        if (in_count >= EV_QUEUE || p->poll_rel >= REL_PER_POLL) break;
         deliver(slot, e, p->session);
         p->rx_next++;
+        p->poll_rel++;
         n_ev_rx++;
     }
-    for (unsigned int k = pk->nev; k < (unsigned int)pk->nev + pk->nuev; k++)
-        if (in_count < EV_QUEUE) deliver(slot, &pk->ev[k], p->session);
+}
+
+// unreliable events: only from a packet newer than any before (a late or doubled datagram would
+// replay its bullets)
+static void take_unreliable(Peer *p, int slot, const Packet *pk) {
+    for (unsigned int k = pk->nev; k < (unsigned int)pk->nev + pk->nuev; k++) {
+        if (in_count >= EV_QUEUE || p->poll_unrel >= UNREL_PER_POLL) { n_udrop++; continue; }
+        deliver(slot, &pk->ev[k], p->session);
+        p->poll_unrel++;
+    }
 }
 
 // Drain the socket; keep each peer's newest state, deliver events. Returns 1 if something new arrived.
@@ -497,6 +545,7 @@ EXPORT net_poll(void) {
     if (sock == INVALID_SOCKET) return 0;
     int got = 0;
     static union { Packet p; EPacket ep; PPacket pp; char raw[2048]; } buf;
+    for (int i = 0; i < MAXP; i++) peers[i].poll_rel = peers[i].poll_unrel = 0;
     for (;;) {
         struct sockaddr_in from;
         int fl = sizeof from;
@@ -513,13 +562,13 @@ EXPORT net_poll(void) {
         unsigned int magic = buf.p.magic;
         if (magic == PMAGIC && n == (int)sizeof(PPacket)) {  // addresses of players our peer knows
             int s = slot_for(&from, 0);
-            if (s < 0 || !peers[s].have_in || buf.pp.session != peers[s].session) continue;
+            if (s < 0 || !peers[s].have_in || buf.pp.session != peers[s].session || buf.pp.room != room_hash) continue;
             for (unsigned int i = 0; i < buf.pp.count && i < MAXP; i++) {
                 struct sockaddr_in a = {0};
                 a.sin_family = AF_INET;
                 a.sin_addr.s_addr = buf.pp.a[i].ip;
                 a.sin_port = buf.pp.a[i].port;
-                slot_for(&a, 1);
+                slot_for(&a, 2);
             }
             continue;
         }
@@ -529,7 +578,7 @@ EXPORT net_poll(void) {
             Peer *p = &peers[s];
             unsigned int cnt = buf.ep.count, pg = buf.ep.page, np = buf.ep.npages;
             if (cnt > ES_PAGE || n != EP_HEAD + (int)(cnt * sizeof(EState)) || pg >= ES_PAGES || np > ES_PAGES ||
-                pg >= np || !p->have_in || buf.ep.session != p->session) { n_bad++; continue; }
+                pg >= np || !p->have_in || buf.ep.session != p->session || buf.ep.room != room_hash) { n_bad++; continue; }
             int newer = !p->es_have || (int)(buf.ep.seq - p->es_last_seq) > 0 || (int)(p->es_last_seq - buf.ep.seq) > 600;
             if (newer || (int)(buf.ep.seq - p->es_pg_seq[pg]) > 0) {
                 memcpy(p->es_pg[pg], buf.ep.e, cnt * sizeof(EState));
@@ -546,7 +595,7 @@ EXPORT net_poll(void) {
         }
         // other mod versions: tell the player (no slot for them)
         if ((magic & 0xFFFFFF) == (MAGIC & 0xFFFFFF) || magic == 0x484D4350u) {
-            if (magic != MAGIC || n < PK_HEAD || buf.p.modver != MOD_VERSION) {
+            if (magic != MAGIC || buf.p.modver != MOD_VERSION) {
                 if (!is_self(&from)) {
                     mism.addr = from;
                     mism.modver = (magic == MAGIC) ? (int)buf.p.modver : 0;
@@ -559,21 +608,38 @@ EXPORT net_poll(void) {
         if (magic != MAGIC || n < PK_HEAD || buf.p.nev > EV_REL || buf.p.nuev > EV_UNREL ||
             n != PK_HEAD + (int)((buf.p.nev + buf.p.nuev) * sizeof(Event))) { n_bad++; continue; }
         if (buf.p.session == out.session) continue;  // our own packet (we are listed as a peer)
+        if (buf.p.room != room_hash) {  // another room code: not one of our players
+            if (!is_self(&from)) {
+                wrongroom.addr = from;
+                wrongroom.t = GetTickCount();
+                wrongroom.n++;
+            }
+            continue;
+        }
         int s = slot_for(&from, 1);
         if (s < 0) continue;  // all slots taken
         Peer *p = &peers[s];
-        // the same player known under two addresses (e.g. gossip): keep the first slot
-        int dup = 0;
-        for (int i = 0; i < MAXP; i++)
-            if (i != s && peers[i].used && peers[i].have_in && peers[i].session == buf.p.session) dup = 1;
-        if (dup) { free_slot(p); continue; }
+        // the same player known under another address: while it still talks from there, this is a
+        // second route (gossip) and is dropped; if it went quiet there, the player moved (VPN relay,
+        // NAT): the old slot takes the new address and keeps its streams
+        for (int i = 0; i < MAXP; i++) {
+            if (i == s || !peers[i].used || !peers[i].have_in || peers[i].session != buf.p.session) continue;
+            if (GetTickCount() - peers[i].last_rx < 1500) { free_slot(p); p = NULL; break; }
+            free_slot(p);
+            peers[i].addr = from;
+            s = i;
+            p = &peers[i];
+            break;
+        }
+        if (!p) continue;
         if (buf.p.session != p->session) {  // peer (re)started: both event streams begin again at id 1
             p->session = buf.p.session;
             reset_streams(p);
         }
         p->n_rx++;
-        take_events(p, s, &buf.p);  // events are processed even from late packets (ids dedupe them)
+        take_events(p, s, &buf.p);
         if (p->have_in && (int)(buf.p.seq - p->last_seq) <= 0 && (int)(p->last_seq - buf.p.seq) < 600) continue;  // stale
+        take_unreliable(p, s, &buf.p);
         memcpy(&p->in, &buf.p, sizeof p->in);
         p->last_seq = buf.p.seq;
         p->have_in = 1;
@@ -616,7 +682,7 @@ static int enqueue(Peer *p, double type, double a, double b, double c, double d)
     if (!p->have_in) return 0;
     if (p->out_next - p->out_first >= EV_QUEUE - 1) {  // queue full: link far too slow, or peer gone
         p->n_overflow++;
-        if (alive(p)) overflow_seen = 1;
+        overflow_seen = 1;
         return 0;
     }
     Event *e = &p->outq[p->out_next % EV_QUEUE];
@@ -702,6 +768,7 @@ EXPORT net_es_send(void) {
     int ok = 0;
     ep.magic = EMAGIC;
     ep.session = out.session;
+    ep.room = room_hash;
     ep.seq = ++es_seq;
     ep.npages = (unsigned short)np;
     for (unsigned int pg = 0; pg < np; pg++) {
@@ -789,14 +856,18 @@ __declspec(dllexport) const char *__cdecl net_status(void) {
             snprintf(msg, sizeof msg, "a player has an older mod version, you have v%s - install the same version", mine);
         return msg;
     }
+    if (wrongroom_recent()) {
+        snprintf(msg, sizeof msg, "a player uses another room code - set the same code on every PC");
+        return msg;
+    }
     if (overflow_seen) {
         snprintf(msg, sizeof msg, "connection too slow: game events were lost (see hmnet_log.txt)");
         return msg;
     }
     return status;
 }
-// 1 while some peer's packets are rejected because of a different mod version
-EXPORT net_version_mismatch(void) { return mism_recent() ? 1 : 0; }
+// 1 while some peer's packets are rejected because of a different mod version or room code
+EXPORT net_version_mismatch(void) { return mism_recent() || wrongroom_recent() ? 1 : 0; }
 // 1 once events could not be queued for a connected peer (the games may differ from then on)
 EXPORT net_overflow(void) { return overflow_seen; }
 // our local / VPN IPv4 addresses (Radmin shows up as 26.x.x.x)
@@ -809,6 +880,12 @@ EXPORT net_set_peer(const char *list) {
     for (int i = 0; i < MAXP; i++) after += peers[i].used;
     snprintf(status, sizeof status, "port %d -> %s", my_port, list);
     return after > before || after > 0;
+}
+// room code changed in the in-game menu (players with the old code drop out after a few seconds)
+EXPORT net_set_room(const char *code) {
+    room_hash = room_of(code);
+    out.room = room_hash;
+    return room_hash != 0;
 }
 EXPORT net_set_name(const char *name) {
     strncpy(out.name, name, 15);

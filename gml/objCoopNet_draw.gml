@@ -1,5 +1,5 @@
 // Connection status (title screen, and for a few seconds after it changes) + the other players' ghosts.
-var st,tx,ty,spr,img,ang,xs,ys,ls,col,msg,s,pskin;
+var st,tx,ty,spr,img,ang,xs,ys,ls,col,msg,s,pskin,by;
 
 if statustimer>0 or instance_exists(objTitle) {
 if global.coop_nconn>0 {msg="CO-OP: connected to "+global.coop_nnames col=make_color_rgb(120,255,160)}
@@ -16,12 +16,15 @@ draw_set_color(c_white)
 
 if instance_exists(objTitle) scrCoopSkinMenuDraw()
 if external_call(global.__net_version_mismatch) or (external_call(global.__net_overflow) and (statustimer>0 or instance_exists(objTitle))) {
+// below the co-op settings on the title screen
+by=28
+if instance_exists(objTitle) by=76
 draw_set_font(fntDate)
 draw_set_halign(fa_center)
 draw_set_color(c_black)
-draw_text(view_xview[0]+view_wview[0]/2+1,view_yview[0]+29,string_upper(external_call(global.__net_status)))
+draw_text(view_xview[0]+view_wview[0]/2+1,view_yview[0]+by+1,string_upper(external_call(global.__net_status)))
 draw_set_color(make_color_rgb(255,90,90))
-draw_text(view_xview[0]+view_wview[0]/2,view_yview[0]+28,string_upper(external_call(global.__net_status)))
+draw_text(view_xview[0]+view_wview[0]/2,view_yview[0]+by,string_upper(external_call(global.__net_status)))
 draw_set_halign(fa_left)
 draw_set_color(c_white)
 }

@@ -3,3 +3,4 @@ peer=
 name=PLAYER
 skin=jacket
 beard_chance=50
+room=

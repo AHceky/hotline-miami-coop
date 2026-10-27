@@ -1,4 +1,4 @@
-"""Check the mod's GML against the game: every obj* / spr* / scr* / snd* / rm* name it uses must exist
+"""Check the mod's GML against the game: every obj* / spr* / scr* name it uses must exist
 (GameMaker 7 only finds out when that line runs: "Unknown variable" in the middle of a level).
 
 usage: py -3 tools/check_gml.py <HotlineMiami_Original.exe>

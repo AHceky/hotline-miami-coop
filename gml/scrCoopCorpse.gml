@@ -13,7 +13,7 @@ if best>=0 scrCoopVanDelete(best)
 bd=56
 for (i=0;i<n;i+=1) {
 d=point_distance(xstart,ystart,ds_list_find_value(global.coop_van_x,i),ds_list_find_value(global.coop_van_y,i))
-if d<bd {bd=d best=i}
+if d<bd {if !scrCoopUidAlive(ds_list_find_value(global.coop_van_uid,i)) {bd=d best=i}}
 }
 if best<0 exit
 uid=ds_list_find_value(global.coop_van_uid,best)

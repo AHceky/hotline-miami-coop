@@ -1,8 +1,9 @@
 """Hotline Miami co-op installer: builds HotlineMiami_Coop.exe from the user's own game copy and
-writes hmcoop.txt.
+writes hmcoop.txt. Speaks Russian on a Russian Windows, English otherwise (--lang ru|en to choose).
 
-usage: install.py [game folder] [--uninstall]
-       install.py [game folder] --batch --name N --peer IP[,IP...] --skin S [--chance 50] [--windowed] [--log FILE]
+usage: install.py [game folder] [--uninstall] [--lang ru|en]
+       install.py [game folder] --batch --name N --peer IP[,IP...] --skin S [--room CODE] [--chance 50]
+                  [--windowed] [--log FILE]
          (no questions: used by the exe installer; exit code 0 ok, 1 build failed, 2 game not found,
           3 mod files missing)
 """
@@ -22,7 +23,7 @@ sys.path.insert(0, TOOLS)
 STEAM = os.path.join(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'), 'Steam')
 MOD_FILES = ('HotlineMiami_Coop.exe', 'hmnet.dll', 'hmnet_log.txt', 'hmbgm.dll')
 SKINS = ['jacket', 'beard', 'richter', 'corey', 'jake', 'son', 'writer', 'pardo', 'henchman', 'random']
-OPTS = ('--name', '--peer', '--skin', '--chance', '--log')   # options that take a value
+OPTS = ('--name', '--peer', '--skin', '--room', '--chance', '--log', '--lang')   # options that take a value
 BATCH = '--batch' in sys.argv
 
 
@@ -32,6 +33,21 @@ def opt(name, default=None):
         if i + 1 < len(sys.argv):
             return sys.argv[i + 1]
     return default
+
+
+def windows_is_russian():
+    try:
+        import ctypes
+        return ctypes.windll.kernel32.GetUserDefaultUILanguage() & 0x3FF == 0x19
+    except Exception:
+        return False
+
+
+RU = (opt('--lang') or ('ru' if windows_is_russian() else 'en')) == 'ru'
+
+
+def T(ru, en):
+    return ru if RU else en
 
 
 def positional():
@@ -98,15 +114,18 @@ def find_game(arg):
         if c and os.path.isfile(os.path.join(c, 'HotlineMiami_Original.exe')):
             return c
     if BATCH:
-        print('Не нашёл Hotline Miami (нет HotlineMiami_Original.exe): ' + (arg or 'папки Steam'))
+        print(T('Не нашёл Hotline Miami (нет HotlineMiami_Original.exe): ',
+                'Hotline Miami not found (no HotlineMiami_Original.exe): ') + (arg or T('папки Steam', 'Steam folders')))
         sys.exit(2)
-    print('Не нашёл Hotline Miami автоматически.')
-    print('Steam: ПКМ по игре -> Управление -> Просмотреть локальные файлы, скопируй путь.')
+    print(T('Не нашёл Hotline Miami автоматически.', 'Could not find Hotline Miami automatically.'))
+    print(T('Steam: ПКМ по игре -> Управление -> Просмотреть локальные файлы, скопируй путь.',
+            'Steam: right-click the game -> Manage -> Browse local files, copy the path.'))
     while True:
-        p = input('Путь к папке hotline_miami: ').strip().strip('"')
+        p = input(T('Путь к папке hotline_miami: ', 'Path to the hotline_miami folder: ')).strip().strip('"')
         if os.path.isfile(os.path.join(p, 'HotlineMiami_Original.exe')):
             return p
-        print('В этой папке нет HotlineMiami_Original.exe, попробуй ещё раз.')
+        print(T('В этой папке нет HotlineMiami_Original.exe, попробуй ещё раз.',
+                'No HotlineMiami_Original.exe in that folder, try again.'))
 
 
 WAD = 'hlm2_data_desktop.wad'
@@ -133,11 +152,13 @@ def find_hm2(game):
             pass
     if BATCH:
         return None
-    print('Hotline Miami 2 не найдена автоматически.')
-    print('Если она установлена: Steam -> ПКМ по Hotline Miami 2 -> Управление -> Просмотреть локальные файлы,')
-    print('скопируй путь из адресной строки. Enter без пути - продолжить без скина Бороды.')
+    print(T('Hotline Miami 2 не найдена автоматически.', 'Hotline Miami 2 not found automatically.'))
+    print(T('Если она установлена: Steam -> ПКМ по Hotline Miami 2 -> Управление -> Просмотреть локальные файлы,',
+            'If you have it: Steam -> right-click Hotline Miami 2 -> Manage -> Browse local files,'))
+    print(T('скопируй путь из адресной строки. Enter без пути - продолжить без персонажей HM2.',
+            'copy the path from the address bar. Enter alone - go on without the HM2 characters.'))
     while True:
-        p = input('Путь к папке Hotline Miami 2: ').strip().strip('"')
+        p = input(T('Путь к папке Hotline Miami 2: ', 'Path to the Hotline Miami 2 folder: ')).strip().strip('"')
         if not p:
             return None
         if os.path.isfile(p) and p.lower().endswith('.wad'):
@@ -145,7 +166,8 @@ def find_hm2(game):
         w = _wad_in(p)
         if w:
             return w
-        print(f'В этой папке нет {WAD}, попробуй ещё раз (или Enter - пропустить).')
+        print(T(f'В этой папке нет {WAD}, попробуй ещё раз (или Enter - пропустить).',
+                f'No {WAD} in that folder, try again (or Enter to skip).'))
 
 
 def read_cfg(path):
@@ -160,54 +182,73 @@ def read_cfg(path):
     return cfg
 
 
+def write_cfg(path, old, peer, name, skin, chance, room):
+    with open(path, 'w', encoding='utf-8', newline='\r\n') as f:
+        f.write(f'port={old.get("port", "7777")}\npeer={peer}\nname={name}\nskin={skin}\nbeard_chance={chance}\n'
+                f'room={room}\n')
+
+
 def ask(prompt, default):
     v = input(f'{prompt} [{default}]: ').strip()
     return v or default
 
 
+def clean_room(room):
+    return re.sub(r'[^A-Za-z0-9_\-]', '', room or '')[:24]
+
+
+SKIN_MENU = [('Джекет', 'Jacket'), ('Борода', 'Beard'), ('Рихтер (крыса)', 'Richter (rat)'),
+             ('Кори (зебра)', 'Corey (zebra)'), ('Джейк (змея)', 'Jake (snake)'), ('Сын', 'Son'),
+             ('Писатель (Эван)', 'Writer (Evan)'), ('Пардо (детектив)', 'Pardo (detective)'),
+             ('Хенчмен', 'Henchman'),
+             ('случайно: с шансом - один из персонажей HM2, иначе Джекет',
+              'random: by chance one of the HM2 characters, otherwise Jacket')]
+
+
 def configure(cfg_path, has_beard):
     old = read_cfg(cfg_path)
     print()
-    print('--- Настройка ---')
+    print(T('--- Настройка ---', '--- Settings ---'))
     while True:
-        name = ask('Твоё имя (латиницей, до 15 символов)', old.get('name', 'PLAYER'))
+        name = ask(T('Твоё имя (латиницей, до 15 символов)', 'Your name (latin letters, up to 15)'), old.get('name', 'PLAYER'))
         name = re.sub(r'[^A-Za-z0-9_\-. ]', '', name)[:15]
         if name:
             break
-        print('Только латинские буквы и цифры.')
-    print('IP других игроков (до трёх, через запятую): в Radmin VPN это адрес вида 26.x.x.x рядом с ником.')
-    print('Достаточно вписать одного - остальных игра найдёт сама.')
+        print(T('Только латинские буквы и цифры.', 'Latin letters and digits only.'))
+    print(T('IP других игроков (до трёх, через запятую): в Radmin VPN это адрес вида 26.x.x.x рядом с ником.',
+            "Other players' IPs (up to three, comma separated): in Radmin VPN it is the 26.x.x.x address next to the nick."))
+    print(T('Достаточно вписать одного - остальных игра найдёт сама.',
+            'One is enough - the game finds the others.'))
     while True:
-        peer = ask('IP других игроков', old.get('peer', '') or '26.')
+        peer = ask(T('IP других игроков', "Other players' IPs"), old.get('peer', '') or '26.')
         parts = [x.strip() for x in re.split(r'[,; ]+', peer) if x.strip()]
         if parts and all(re.fullmatch(r'[\w.\-]+(:\d+)?', x) and x != '26.' for x in parts):
             break
-        print('Не похоже на адрес, попробуй ещё раз (например 26.12.34.56 или 26.1.1.1, 26.2.2.2).')
+        print(T('Не похоже на адрес, попробуй ещё раз (например 26.12.34.56 или 26.1.1.1, 26.2.2.2).',
+                "That doesn't look like an address, try again (e.g. 26.12.34.56 or 26.1.1.1, 26.2.2.2)."))
     peer = ','.join(x if ':' in x else x + ':7777' for x in parts[:3])
+    print(T('Код комнаты - одно слово, одинаковое у всех игроков (латиница и цифры). С ним к вам не подключится',
+            'Room code - one word, the same for every player (latin letters and digits). With it nobody who'))
+    print(T('посторонний, который не знает код. Enter без кода - без защиты.',
+            "doesn't know the code can join you. Enter alone - no protection."))
+    room = clean_room(ask(T('Код комнаты', 'Room code'), old.get('room', '')))
     skin, chance = 'jacket', old.get('beard_chance', '50')
     if has_beard:
-        skins = ['jacket', 'beard', 'richter', 'corey', 'jake', 'son', 'writer', 'pardo', 'henchman', 'random']
-        print('Скин (персонажа можно сменить и в главном меню игры клавишей C):')
-        print('  1 - Джекет')
-        print('  2 - Борода      (спрайты из HM2)')
-        print('  3 - Рихтер      (крыса, спрайты из HM2)')
-        print('  4 - Кори        (зебра, спрайты из HM2)')
-        print('  5 - Джейк       (змея, спрайты из HM2)')
-        print('  6 - Сын         (спрайты из HM2)')
-        print('  7 - Писатель    (Эван, спрайты из HM2)')
-        print('  8 - Пардо       (детектив, спрайты из HM2)')
-        print('  9 - Хенчмен     (спрайты из HM2)')
-        print(' 10 - случайно: с шансом - один из персонажей HM2, иначе Джекет')
-        cur = str(skins.index(old.get('skin', 'jacket')) + 1) if old.get('skin') in skins else '1'
-        c = ask('Выбор', cur)
-        skin = skins[int(c) - 1] if c.isdigit() and 1 <= int(c) <= len(skins) else 'jacket'
+        print(T('Персонаж (его можно сменить и в главном меню игры клавишей C):',
+                'Character (can also be changed in the game menu with C):'))
+        for i, (ru, en) in enumerate(SKIN_MENU):
+            hm2 = '' if i in (0, len(SKIN_MENU) - 1) else T('   (спрайты из HM2)', '   (HM2 sprites)')
+            print(f'  {i + 1:2} - {T(ru, en)}{hm2}')
+        cur = str(SKINS.index(old.get('skin', 'jacket')) + 1) if old.get('skin') in SKINS else '1'
+        c = ask(T('Выбор', 'Choice'), cur)
+        skin = SKINS[int(c) - 1] if c.isdigit() and 1 <= int(c) <= len(SKINS) else 'jacket'
         if skin == 'random':
-            chance = ask('Шанс персонажа HM2 в процентах', chance)
+            chance = ask(T('Шанс персонажа HM2 в процентах', 'Chance of an HM2 character, percent'), chance)
     else:
-        print('Hotline Miami 2 не найдена - скины из HM2 недоступны, будешь Джекетом.')
-    with open(cfg_path, 'w', encoding='utf-8', newline='\r\n') as f:
-        f.write(f'port={old.get("port", "7777")}\npeer={peer}\nname={name}\nskin={skin}\nbeard_chance={chance}\n')
-    print(f'Сохранено в {cfg_path}')
+        print(T('Hotline Miami 2 не найдена - персонажи из HM2 недоступны, будешь Джекетом.',
+                'Hotline Miami 2 not found - no HM2 characters, you play as Jacket.'))
+    write_cfg(cfg_path, old, peer, name, skin, chance, room)
+    print(T(f'Сохранено в {cfg_path}', f'Saved to {cfg_path}'))
 
 
 def clean_peer(peer):
@@ -220,15 +261,16 @@ def configure_batch(cfg_path, has_beard):
     old = read_cfg(cfg_path)
     name = re.sub(r'[^A-Za-z0-9_\-. ]', '', opt('--name', old.get('name', 'PLAYER')))[:15] or 'PLAYER'
     peer = clean_peer(opt('--peer', old.get('peer', '')))
+    room = clean_room(opt('--room', old.get('room', '')))
     skin = opt('--skin', old.get('skin', 'jacket')).lower()
     if skin not in SKINS:
         skin = 'jacket'
     if not has_beard and skin != 'jacket':
-        print('Hotline Miami 2 не найдена - персонажи из HM2 недоступны, будешь Джекетом.')
+        print(T('Hotline Miami 2 не найдена - персонажи из HM2 недоступны, будешь Джекетом.',
+                'Hotline Miami 2 not found - no HM2 characters, you play as Jacket.'))
     chance = opt('--chance', old.get('beard_chance', '50'))
-    with open(cfg_path, 'w', encoding='utf-8', newline='\r\n') as f:
-        f.write(f'port={old.get("port", "7777")}\npeer={peer}\nname={name}\nskin={skin}\nbeard_chance={chance}\n')
-    print(f'Сохранено в {cfg_path}: name={name} peer={peer} skin={skin}')
+    write_cfg(cfg_path, old, peer, name, skin, chance, room)
+    print(T('Сохранено в', 'Saved to') + f' {cfg_path}: name={name} peer={peer} skin={skin} room={room or "-"}')
 
 
 def missing_files():
@@ -242,37 +284,42 @@ def main():
     if log:
         sys.stdout = sys.stderr = open(log, 'w', encoding='utf-8-sig', buffering=1)  # BOM: the exe installer reads it
     if '--uninstall' not in sys.argv and missing_files():
-        print('Не хватает файлов мода:')
+        print(T('Не хватает файлов мода:', 'Mod files are missing:'))
         for f in missing_files():
             print('  ' + f)
         print()
-        print('Скорее всего скачаны исходники ("Code -> Download ZIP") или архив распакован не целиком.')
-        print('Скачай готовый архив HotlineMiami-Coop-vX.zip из раздела Releases на GitHub,')
-        print('распакуй его ЦЕЛИКОМ и запусти install.bat оттуда.')
+        print(T('Скорее всего скачаны исходники ("Code -> Download ZIP") или архив распакован не целиком.',
+                'Probably the source code was downloaded ("Code -> Download ZIP") or the archive was not fully unpacked.'))
+        print(T('Скачай готовый архив HotlineMiami-Coop-vX.zip из раздела Releases на GitHub,',
+                'Download the ready archive HotlineMiami-Coop-vX.zip from Releases on GitHub,'))
+        print(T('распакуй его ЦЕЛИКОМ и запусти install.bat оттуда.', 'unpack ALL of it and run install.bat from there.'))
         return 3
     args = positional()
     game = find_game(args[0] if args else None)
-    print(f'Игра: {game}')
+    print(T('Игра: ', 'Game: ') + game)
 
     if '--uninstall' in sys.argv:
         for f in MOD_FILES:
             p = os.path.join(game, f)
             if os.path.exists(p):
                 os.remove(p)
-        print('Мод удалён (hmcoop.txt оставлен). Оригинальная игра не менялась.')
+        print(T('Мод удалён (hmcoop.txt оставлен). Оригинальная игра не менялась.',
+                'Mod removed (hmcoop.txt kept). The original game was not changed.'))
         return 0
 
     hm2 = find_hm2(game)
-    print(f'Hotline Miami 2: {hm2 or "не найдена (скин Бороды будет недоступен)"}')
-    ans = ('y' if '--windowed' in sys.argv else 'n') if BATCH else input('Запускать в окне, а не на весь экран? (y/N): ').strip().lower()
+    print('Hotline Miami 2: ' + (hm2 or T('не найдена (персонажи HM2 будут недоступны)', 'not found (no HM2 characters)')))
+    ans = ('y' if '--windowed' in sys.argv else 'n') if BATCH else input(
+        T('Запускать в окне, а не на весь экран? (y/N): ', 'Run in a window instead of fullscreen? (y/N): ')).strip().lower()
     cmd = [sys.executable, os.path.join(TOOLS, 'build_mod.py'),
            os.path.join(game, 'HotlineMiami_Original.exe'), os.path.join(game, 'HotlineMiami_Coop.exe')]
     cmd += ['--hm2', hm2] if hm2 else ['--no-hm2']
     if ans in ('y', 'yes', 'д', 'да'):
         cmd.append('--windowed')
-    print('Собираю HotlineMiami_Coop.exe из твоей копии игры...', flush=True)
+    print(T('Собираю HotlineMiami_Coop.exe из твоей копии игры...', 'Building HotlineMiami_Coop.exe from your copy of the game...'),
+          flush=True)
     if subprocess.call(cmd, stdout=sys.stdout, stderr=sys.stderr) != 0:
-        print('Ошибка сборки. Оригинальные файлы игры не тронуты.')
+        print(T('Ошибка сборки. Оригинальные файлы игры не тронуты.', 'Build failed. The original game files are untouched.'))
         return 1
     shutil.copyfile(os.path.join(ROOT, 'hmnet.dll'), os.path.join(game, 'hmnet.dll'))
     # the game's bgm.dll breaks whenever Windows loads it at another address (duplicated relocations);
@@ -285,8 +332,9 @@ def main():
     else:
         configure(cfg, bool(hm2))
     print()
-    print('Готово. В папке игры: HotlineMiami_Coop.exe, hmnet.dll, hmcoop.txt')
-    print(f'Запуск: {os.path.join(game, "HotlineMiami_Coop.exe")}')
+    print(T('Готово. В папке игры: HotlineMiami_Coop.exe, hmnet.dll, hmcoop.txt',
+            'Done. In the game folder: HotlineMiami_Coop.exe, hmnet.dll, hmcoop.txt'))
+    print(T('Запуск: ', 'Start: ') + os.path.join(game, 'HotlineMiami_Coop.exe'))
     return 0
 
 

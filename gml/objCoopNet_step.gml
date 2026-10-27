@@ -8,8 +8,11 @@ scrCoopPeers()
 if global.coop_nconn>0 coop_everconn=1
 
 // reliable events from the partner: 1 = enemy killed (room, uid), 2 = left room (from, to)
-var et,ea,eb,ec,ed,c;
-while external_call(global.__net_ev_count)>0 {
+var et,ea,eb,ec,ed,c,ne;
+// at most 128 a step: a flood (or a stranger) cannot freeze the game, the rest waits for the next step
+ne=0
+while external_call(global.__net_ev_count)>0 and ne<128 {
+ne+=1
 et=external_call(global.__net_ev_get,0)
 ea=external_call(global.__net_ev_get,1)
 eb=external_call(global.__net_ev_get,2)
@@ -17,14 +20,17 @@ ec=external_call(global.__net_ev_get,3)
 ed=external_call(global.__net_ev_get,4)
 if et=1 {
 scrCoopAddDead(eb,ea)
-if ea=room scrCoopApplyDead()
+if ea=room {global.coop_drop=1 scrCoopApplyDead() global.coop_drop=0}
 }
 // 16 = a player restarted that floor alone (R): its enemies are alive again
 if et=16 scrCoopForgetRoom(ea)
+// 17 = a player restarted this floor with us here (R): they need this floor's weapon list again
+if et=17 and ea=room coop_wpres[external_call(global.__net_ev_get,5)]=0
 if et=2 scrCoopFollow(ea,eb)
 // 3 = the partner hands us an enemy (room, uid, x*10000+y, alert); ignored if a third player took it
 // by hitting it a moment ago (event 5 overtook the handoff)
 if et=3 and ea=room {
+global.coop_ks=external_call(global.__net_ev_get,5)
 c=ds_list_find_index(global.coop_claim_uid,eb)
 if c>=0 {if current_time-ds_list_find_value(global.coop_claim_t,c)>800 or external_call(global.__net_ev_get,5)=ds_list_find_value(global.coop_claim_s,c) c=-1}
 if c<0 {
@@ -38,6 +44,7 @@ scrCoopWithFamily(scrCoopTakeOne)
 // 5 = the partner took over an enemy by hitting it (room, uid)
 if et=5 and ea=room {
 global.coop_k=eb
+global.coop_ks=external_call(global.__net_ev_get,5)
 scrCoopWithFamily(scrCoopYieldOne)
 c=ds_list_find_index(global.coop_claim_uid,eb)
 if c>=0 {ds_list_delete(global.coop_claim_uid,c) ds_list_delete(global.coop_claim_t,c) ds_list_delete(global.coop_claim_s,c)}
@@ -82,14 +89,23 @@ with objWeapon {if point_distance(x,y,global.coop_kx,global.coop_ky)<global.coop
 with objWeaponThrow {if image_index=global.coop_k {if point_distance(x,y,global.coop_kx,global.coop_ky)<global.coop_bd {global.coop_bd=point_distance(x,y,global.coop_kx,global.coop_ky) global.coop_best=id}}}
 if global.coop_best!=-1 with global.coop_best instance_destroy()
 }
-// 15 = the senior partner's weapon on the floor (room, x*10000+y, type, ammo): ours there becomes the same
+// the weapons on the floor of the player who has been here longest: 18 (room) starts the list, 15 (room,
+// x*10000+y, type, ammo) for each weapon, 19 (room) ends it. Ours become the same: the nearest one of
+// ours (24 px) takes that type, a weapon we lack appears, and the ones of ours not in the list (picked up
+// over there, e.g. while we went back to the checkpoint) go away.
+if et=18 and ea=room {with objWeapon coop_wsync=0 coop_wsyncing=1}
 if et=15 and ea=room {
 global.coop_kx=floor(eb/10000)
 global.coop_ky=eb-global.coop_kx*10000
 global.coop_best=-1
 global.coop_bd=24
-with objWeapon {if point_distance(x,y,global.coop_kx,global.coop_ky)<global.coop_bd {global.coop_bd=point_distance(x,y,global.coop_kx,global.coop_ky) global.coop_best=id}}
-if global.coop_best!=-1 {global.coop_best.image_index=ec global.coop_best.ammo=ed}
+with objWeapon {if variable_local_exists("coop_wsync") {if coop_wsync=0 {if point_distance(x,y,global.coop_kx,global.coop_ky)<global.coop_bd {global.coop_bd=point_distance(x,y,global.coop_kx,global.coop_ky) global.coop_best=id}}}}
+if global.coop_best=-1 and coop_wsyncing=1 global.coop_best=instance_create(global.coop_kx,global.coop_ky,objWeapon)
+if global.coop_best!=-1 {global.coop_best.image_index=ec global.coop_best.ammo=ed global.coop_best.coop_wsync=1}
+}
+if et=19 and ea=room and coop_wsyncing=1 {
+with objWeapon {if variable_local_exists("coop_wsync") {if coop_wsync=0 instance_destroy()}}
+coop_wsyncing=0
 }
 // 10 = the partner threw / dropped a weapon (room, x*10000+y, dir*64+speed*2, type*1000+ammo)
 if et=10 and ea=room {
@@ -150,7 +166,11 @@ for (s=0;s<global.coop_npeers;s+=1) {if coop_wpres[s]=1 {
 if global.coop_prt[s]>coop_rt+30 global.coop_k=0
 else if global.coop_prt[s]+30>=coop_rt and global.coop_prank[s]=0 global.coop_k=0
 }}
-if global.coop_k=1 with objWeapon external_call(global.__net_event4,15,room,floor(max(0,x))*10000+floor(max(0,y)),image_index,ammo)
+if global.coop_k=1 {
+external_call(global.__net_event,18,room,0,0)
+with objWeapon external_call(global.__net_event4,15,room,floor(max(0,x))*10000+floor(max(0,y)),image_index,ammo)
+external_call(global.__net_event,19,room,0,0)
+}
 }
 // our bullets: the others on this floor see them fly (event 12, unreliable: a lost one is just not drawn)
 with objBullet {if !variable_local_exists("coop_seen") {coop_seen=1 if global.coop_together=1 external_call(global.__net_uevent4,12,room,floor(max(0,x))*10000+floor(max(0,y)),direction,speed)}}

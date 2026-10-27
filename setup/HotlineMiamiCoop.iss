@@ -54,9 +54,10 @@ ru.GameDesc=Установщик соберёт кооп-версию HotlineMia
 ru.GameNotFound=В этой папке нет HotlineMiami_Original.exe. Укажи папку hotline_miami из Steam.
 ru.PlayerTitle=Ты и другие игроки
 ru.PlayerSub=Имя над головой и адреса других игроков в Radmin VPN
-ru.PlayerDesc=До 4 игроков. IP — адрес вида 26.x.x.x рядом с ником в Radmin VPN. Достаточно вписать одного игрока, остальных игра найдёт сама. Всё это можно поменять и в меню игры (N, I).
+ru.PlayerDesc=До 4 игроков. IP - адрес вида 26.x.x.x рядом с ником в Radmin VPN; достаточно вписать одного игрока, остальных игра найдёт сама. Код комнаты - одно слово, одинаковое у всех: без него к вам может подключиться любой, кто найдёт ваш адрес. Всё это можно поменять и в меню игры (N, I, K).
 ru.NameLabel=Твоё имя (латиницей, до 15 символов):
 ru.PeerLabel=IP других игроков (через запятую):
+ru.RoomLabel=Код комнаты (латиница и цифры, одинаковый у всех; можно пусто):
 ru.BadName=Имя: только латинские буквы, цифры, пробел, точка, дефис и подчёркивание.
 ru.CharTitle=Персонаж
 ru.CharSub=Кем ты будешь играть
@@ -72,9 +73,10 @@ en.GameDesc=The installer builds the co-op HotlineMiami_Coop.exe from your own g
 en.GameNotFound=This folder has no HotlineMiami_Original.exe. Choose the hotline_miami folder from Steam.
 en.PlayerTitle=You and the other players
 en.PlayerSub=Name above your head and the other players' Radmin VPN addresses
-en.PlayerDesc=Up to 4 players. The IP is the 26.x.x.x address next to the nickname in Radmin VPN. One player is enough, the game finds the others. All of this can be changed in the game menu too (N, I).
+en.PlayerDesc=Up to 4 players. The IP is the 26.x.x.x address next to the nickname in Radmin VPN; one player is enough, the game finds the others. The room code is one word, the same for everyone: without it anybody who finds your address can join. All of this can be changed in the game menu too (N, I, K).
 en.NameLabel=Your name (latin letters, up to 15):
 en.PeerLabel=Other players' IPs (comma separated):
+en.RoomLabel=Room code (latin letters and digits, the same for everyone; may be empty):
 en.BadName=Name: latin letters, digits, space, dot, dash and underscore only.
 en.CharTitle=Character
 en.CharSub=Who you play as
@@ -172,8 +174,10 @@ begin
     CustomMessage('PlayerDesc'));
   PlayerPage.Add(CustomMessage('NameLabel'), False);
   PlayerPage.Add(CustomMessage('PeerLabel'), False);
+  PlayerPage.Add(CustomMessage('RoomLabel'), False);
   PlayerPage.Values[0] := 'PLAYER';
   PlayerPage.Values[1] := '26.';
+  PlayerPage.Values[2] := '';
 
   CharPage := CreateCustomPage(PlayerPage.ID, CustomMessage('CharTitle'), CustomMessage('CharSub'));
   Lbl := TNewStaticText.Create(CharPage);
@@ -211,6 +215,7 @@ begin
     L := Trim(Lines[i]);
     if Pos('name=', L) = 1 then PlayerPage.Values[0] := Copy(L, 6, Length(L));
     if Pos('peer=', L) = 1 then PlayerPage.Values[1] := Copy(L, 6, Length(L));
+    if Pos('room=', L) = 1 then PlayerPage.Values[2] := Copy(L, 6, Length(L));
     if Pos('skin=', L) = 1 then
       for k := 0 to 9 do
         if SplitPart(SkinIds, k) = Lowercase(Copy(L, 6, Length(L))) then CharCombo.ItemIndex := k;
@@ -252,17 +257,21 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Params, Log, LogText: String;
-  Peer: String;
+  Peer, Room: String;
   LogLines: TArrayOfString;
   i, n: Integer;
   Target: String;
 begin
   if CurStep <> ssPostInstall then exit;
   Log := ExpandConstant('{app}\install_log.txt');
+  // quotes would break the command line (install.py filters everything else)
   Peer := Trim(PlayerPage.Values[1]);
+  StringChangeEx(Peer, '"', '', True);
   if Peer = '26.' then Peer := '';
+  Room := Trim(PlayerPage.Values[2]);
+  StringChangeEx(Room, '"', '', True);
   Params := Quote(ExpandConstant('{app}\tools\install.py')) + ' ' + Quote(GameDir('')) +
-    ' --batch --name ' + Quote(PlayerPage.Values[0]) + ' --peer ' + Quote(Peer) +
+    ' --batch --name ' + Quote(PlayerPage.Values[0]) + ' --peer ' + Quote(Peer) + ' --room ' + Quote(Room) +
     ' --skin ' + SplitPart(SkinIds, CharCombo.ItemIndex) + ' --log ' + Quote(Log);
   if WindowedBox.Checked then Params := Params + ' --windowed';
   SetIniString('install', 'game', GameDir(''), ExpandConstant('{app}\installer.ini'));
