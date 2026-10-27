@@ -25,6 +25,14 @@
 //   beard_chance=50                 percent, for skin=random
 //   room=word                       room code, the same for every player (empty = none): packets with
 //                                   another code are ignored, so strangers on the network cannot join
+//   steam=1                         also play through Steam (default 1, 0 = off), see below
+//
+// Steam: with Steam running, the game's own steam_api.dll (AppID 219150) is used as a second transport
+// next to UDP. Players with the same room code find each other through a Steam lobby search (no IPs, no
+// VPN); without a room code each player sits in a friends-only lobby that Steam friends join with
+// "Join game" / an invite. Lobby members are the only Steam peers (so their packets skip the room code
+// check: someone invited may have another code); their packets go through Steam P2P
+// (relayed when a direct path fails). Packets are kept under 1200 bytes, Steam's unreliable limit.
 
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -41,13 +49,13 @@
 #define MAGIC 0x34434D48u  /* "HMC4": state + events (carries the mod version, kept from now on) */
 #define EMAGIC 0x35454D48u /* "HME5": enemy state page */
 #define PMAGIC 0x34504D48u /* "HMP4": addresses of the other peers we know */
-#define MOD_VERSION 90     /* v0.9: compared with the peers', a difference is reported */
+#define MOD_VERSION 100    /* v1.0: compared with the peers', a difference is reported */
 #define MAXP 3             /* peers (players besides us) */
-#define ES_PAGE 48         /* enemies per enemy-state packet */
-#define ES_PAGES 4         /* -> up to 192 enemies sent */
+#define ES_PAGE 40         /* enemies per enemy-state packet (1144 bytes) */
+#define ES_PAGES 5         /* -> up to 200 enemies sent */
 #define ES_MAX (ES_PAGE * ES_PAGES)
 #define EV_REL 16          /* reliable events per packet */
-#define EV_UNREL 8         /* unreliable events per packet */
+#define EV_UNREL 6         /* unreliable events per packet (full packet 1184 bytes) */
 #define EV_PER_PACKET (EV_REL + EV_UNREL)
 #define EV_QUEUE 1024
 #define UQ_MAX 128         /* unreliable events waiting for the next packets */
@@ -109,11 +117,19 @@ typedef struct {
 } PPacket;
 #pragma pack(pop)
 
+typedef unsigned long long u64;
+
+// where a peer is: a UDP address, or (sid != 0) a Steam user reached through Steam P2P
+typedef struct {
+    struct sockaddr_in in;
+    u64 sid;
+} Addr;
+
 typedef struct {
     int used;                 // slot holds an address (configured or learned)
-    int configured;           // typed by the player (hmcoop.txt / menu), not learned
+    int configured;           // typed by the player (hmcoop.txt / menu) or in our Steam lobby, not learned
     DWORD added;              // when the slot was taken
-    struct sockaddr_in addr;
+    Addr addr;
     unsigned int session;     // peer's session, 0 = not heard yet
     Packet in;
     unsigned int last_seq;
@@ -137,8 +153,9 @@ typedef struct {
 } Peer;
 
 // a different mod version / room code heard recently (a slot is not given to such a sender)
-static struct { struct sockaddr_in addr; int modver; DWORD t; unsigned long n; } mism, wrongroom;
+static struct { Addr addr; int modver; DWORD t; unsigned long n; } mism, wrongroom;
 static unsigned int room_hash = 0;  // our room code, hashed (0 = none)
+static char room_code[64] = "";
 
 typedef struct {
     Event e;
@@ -168,11 +185,136 @@ static char local_addrs[200] = "";
 static unsigned int local_ip[16];
 static int n_local_ip = 0;
 
+// ---- Steam: the game's steam_api.dll (Steamworks SDK of early 2013) has C++ interfaces only; they are
+// called through their vtables (MSVC thiscall; a CSteamID result comes back through a hidden pointer).
+// Slots are those of SteamNetworking005, SteamMatchMaking009, SteamUser016, SteamUtils006, SteamFriends013.
+#define TC __attribute__((thiscall))
+#define VF(obj, i) ((*(void ***)(obj))[i])
+
+typedef struct SteamCB SteamCB;
+typedef struct {
+    // MSVC lays out the two Run overloads in reverse: Run(param, io_failure, call) comes first
+    void(TC *run_result)(SteamCB *, void *, int, u64);
+    void(TC *run)(SteamCB *, void *);
+    int(TC *size)(SteamCB *);
+} SteamCBVt;
+struct SteamCB {  // CCallbackBase
+    const SteamCBVt *vt;
+    unsigned char flags;
+    int id;
+};
+
+static struct {
+    int want;              // steam= in hmcoop.txt
+    int ok;                // Steam is up
+    void *net, *mm, *usr, *utl, *fr;
+    void (*run_callbacks)(void);
+    u64 me, lobby, call, join_req;
+    int call_kind;         // the pending call: 1 lobby search, 2 create, 3 join
+    int stale;             // the room code changed while it was pending: its lobby is not ours
+    DWORD next_search, next_sync;
+    u64 members[MAXP + 1]; // our lobby, us included
+    int nmembers;
+    u64 dup_sid[MAXP];     // members that reach us over UDP already: no second route for a while
+    DWORD dup_t[MAXP];
+    char key[12];          // lobby data "hmroom", from the room code ("" = no code: friends-only lobby)
+    char state[96];
+    int selftest;          // HMNET_STEAM_SELF=1: our own SteamID counts as a peer (two games, one account)
+} st = {1};
+
+static void st_key(void);
+
+static int st_is_member(u64 sid) {
+    for (int i = 0; i < st.nmembers; i++)
+        if (st.members[i] == sid) return 1;
+    return 0;
+}
+
+static int st_send(u64 sid, const void *buf, int len) {
+    // k_EP2PSendUnreliable on channel 0
+    return ((unsigned char(TC *)(void *, u64, const void *, unsigned int, int, int))VF(st.net, 0))(
+        st.net, sid, buf, (unsigned int)len, 0, 0);
+}
+
+// next P2P packet: its length (0 = none waiting, -1 = too big, dropped)
+static int st_recv(void *buf, int size, u64 *from) {
+    unsigned int n = 0;
+    if (!((unsigned char(TC *)(void *, unsigned int *, int))VF(st.net, 1))(st.net, &n, 0)) return 0;
+    static char junk[8192];
+    int big = (int)n > size;
+    ((unsigned char(TC *)(void *, void *, unsigned int, unsigned int *, u64 *, int))VF(st.net, 2))(
+        st.net, big ? junk : buf, big ? sizeof junk : (unsigned int)size, &n, from, 0);
+    return big ? -1 : (int)n;
+}
+
+// GameLobbyJoinRequested_t (Steam friends list "Join game" / an accepted invite while we run)
+static void TC st_join_run(SteamCB *cb, void *param) {
+    (void)cb;
+    st.join_req = *(u64 *)param;
+}
+static void TC st_join_run_result(SteamCB *cb, void *param, int io_failure, u64 call) {
+    (void)io_failure;
+    (void)call;
+    st_join_run(cb, param);
+}
+static int TC st_join_size(SteamCB *cb) {
+    (void)cb;
+    return 16;
+}
+static const SteamCBVt st_join_vt = {st_join_run_result, st_join_run, st_join_size};
+static SteamCB st_join_cb = {&st_join_vt, 0, 0};
+
+static void st_start(void) {
+    if (!st.want) { strcpy(st.state, "off"); return; }
+    HMODULE h = LoadLibraryA("steam_api.dll");
+    if (!h) { strcpy(st.state, "no steam_api.dll (not the Steam version of the game)"); return; }
+    unsigned char (*init)(void) = (void *)GetProcAddress(h, "SteamAPI_Init");
+    void (*reg)(SteamCB *, int) = (void *)GetProcAddress(h, "SteamAPI_RegisterCallback");
+    void *(*get_net)(void) = (void *)GetProcAddress(h, "SteamNetworking");
+    void *(*get_mm)(void) = (void *)GetProcAddress(h, "SteamMatchmaking");
+    void *(*get_usr)(void) = (void *)GetProcAddress(h, "SteamUser");
+    void *(*get_utl)(void) = (void *)GetProcAddress(h, "SteamUtils");
+    void *(*get_fr)(void) = (void *)GetProcAddress(h, "SteamFriends");
+    st.run_callbacks = (void *)GetProcAddress(h, "SteamAPI_RunCallbacks");
+    if (!init || !reg || !get_net || !get_mm || !get_usr || !get_utl || !get_fr || !st.run_callbacks) {
+        strcpy(st.state, "unknown steam_api.dll");
+        return;
+    }
+    // the game's Steamworks extension may have done it already: a second init is harmless
+    if (!init()) { strcpy(st.state, "Steam is not running"); return; }
+    st.net = get_net();
+    st.mm = get_mm();
+    st.usr = get_usr();
+    st.utl = get_utl();
+    st.fr = get_fr();
+    if (!st.net || !st.mm || !st.usr || !st.utl || !st.fr) { strcpy(st.state, "Steam interfaces missing"); return; }
+    ((u64 * (TC *)(void *, u64 *)) VF(st.usr, 2))(st.usr, &st.me);  // GetSteamID
+    ((unsigned char(TC *)(void *, unsigned char))VF(st.net, 7))(st.net, 1);  // AllowP2PPacketRelay
+    reg(&st_join_cb, 333);
+    // started by Steam for an invite: "+connect_lobby <id>"
+    const char *c = strstr(GetCommandLineA(), "+connect_lobby ");
+    if (c) st.join_req = _strtoui64(c + 15, NULL, 10);
+    st.selftest = getenv("HMNET_STEAM_SELF") != NULL;
+    st.ok = 1;
+    strcpy(st.state, "starting");
+    st_key();
+}
+
 // Test aid: HMNET_LOSS=<percent> in the environment drops that share of outgoing datagrams.
 static int loss_pct = 0;
-static int xsend(const void *buf, int len, const struct sockaddr *to, int tolen) {
+static int xsend(const void *buf, int len, const Addr *to) {
     if (loss_pct > 0 && rand() % 100 < loss_pct) return len;
-    return sendto(sock, (const char *)buf, len, 0, to, tolen);
+    if (to->sid) return st.ok && st_send(to->sid, buf, len) ? len : -1;
+    return sendto(sock, (const char *)buf, len, 0, (const struct sockaddr *)&to->in, sizeof to->in);
+}
+
+static const char *addr_str(const Addr *a) {
+    static char s[2][40];
+    static int k;
+    k ^= 1;
+    if (a->sid) snprintf(s[k], sizeof s[k], "steam:%llu", a->sid);
+    else snprintf(s[k], sizeof s[k], "%s:%d", inet_ntoa(a->in.sin_addr), ntohs(a->in.sin_port));
+    return s[k];
 }
 
 static int mism_recent(void) { return mism.n && GetTickCount() - mism.t < 3000; }
@@ -210,20 +352,23 @@ static void write_log(void) {
     for (int i = 0; i < MAXP; i++) {
         Peer *p = &peers[i];
         if (!p->used) continue;
-        fprintf(f, "peer %d: %s:%d%s  name %s  received %lu  last packet %ld ms ago  unacked events %u%s\n", i,
-                inet_ntoa(p->addr.sin_addr), ntohs(p->addr.sin_port), p->configured ? "" : " (learned)",
+        fprintf(f, "peer %d: %s%s  name %s  received %lu  last packet %ld ms ago  unacked events %u%s\n", i,
+                addr_str(&p->addr), p->configured ? "" : " (learned)",
                 p->name[0] ? p->name : "-", p->n_rx, p->have_in ? (long)(now - p->last_rx) : -1L,
                 p->out_next - p->out_first, p->n_overflow ? "  WARNING: event queue overflowed" : "");
     }
+    fprintf(f, "steam: %s", st.state);
+    if (st.ok) fprintf(f, "  me %llu  lobby %llu  members %d", st.me, st.lobby, st.nmembers);
+    fprintf(f, "\n");
     if (mism.n) {
         char v[16];
         ver_str(v, sizeof v, mism.modver);
-        fprintf(f, "WARNING: %s:%d has mod v%s (%lu packets ignored) - install the same version on every PC\n",
-                inet_ntoa(mism.addr.sin_addr), ntohs(mism.addr.sin_port), mism.modver ? v : "<0.6", mism.n);
+        fprintf(f, "WARNING: %s has mod v%s (%lu packets ignored) - install the same version on every PC\n",
+                addr_str(&mism.addr), mism.modver ? v : "<0.6", mism.n);
     }
     if (wrongroom.n)
-        fprintf(f, "WARNING: %s:%d uses another room code (%lu packets ignored) - set the same room= on every PC\n",
-                inet_ntoa(wrongroom.addr.sin_addr), ntohs(wrongroom.addr.sin_port), wrongroom.n);
+        fprintf(f, "WARNING: %s uses another room code (%lu packets ignored) - set the same room= on every PC\n",
+                addr_str(&wrongroom.addr), wrongroom.n);
     fclose(f);
 }
 
@@ -233,7 +378,9 @@ static void trim(char *s) {
     while (s[0] == ' ') memmove(s, s + 1, strlen(s));
 }
 
-static int resolve(const char *hostport, struct sockaddr_in *sa) {
+static int resolve(const char *hostport, Addr *ad) {
+    struct sockaddr_in *sa = &ad->in;
+    ad->sid = 0;
     char host[200];
     int port = 7777;
     strncpy(host, hostport, sizeof host - 1);
@@ -285,15 +432,17 @@ static void find_local_addrs(void) {
     freeaddrinfo(res);
 }
 
-static int is_self(const struct sockaddr_in *a) {
-    if (ntohs(a->sin_port) != my_port) return 0;
+static int is_self(const Addr *a) {
+    if (a->sid) return a->sid == st.me && !st.selftest;
+    if (ntohs(a->in.sin_port) != my_port) return 0;
     for (int i = 0; i < n_local_ip; i++)
-        if (local_ip[i] == a->sin_addr.s_addr) return 1;
+        if (local_ip[i] == a->in.sin_addr.s_addr) return 1;
     return 0;
 }
 
-static int same_addr(const struct sockaddr_in *a, const struct sockaddr_in *b) {
-    return a->sin_addr.s_addr == b->sin_addr.s_addr && a->sin_port == b->sin_port;
+static int same_addr(const Addr *a, const Addr *b) {
+    if (a->sid || b->sid) return a->sid == b->sid;
+    return a->in.sin_addr.s_addr == b->in.sin_addr.s_addr && a->in.sin_port == b->in.sin_port;
 }
 
 static void reset_streams(Peer *p) {
@@ -329,7 +478,7 @@ static int reusable(const Peer *p, DWORD now) {
 
 // slot for this address: existing, or a free one (learned peer); -1 if full / it is us.
 // add: 0 = existing only, 1 = may also reuse a dead slot, 2 = free slots only
-static int slot_for(const struct sockaddr_in *a, int add) {
+static int slot_for(const Addr *a, int add) {
     for (int i = 0; i < MAXP; i++)
         if (peers[i].used && same_addr(&peers[i].addr, a)) return i;
     if (!add || is_self(a)) return -1;
@@ -357,7 +506,7 @@ static void set_peers(const char *list) {
     strncpy(buf, list, sizeof buf - 1);
     buf[sizeof buf - 1] = 0;
     for (s = strtok_s(buf, ",;", &ctx); s; s = strtok_s(NULL, ",;", &ctx)) {
-        struct sockaddr_in a;
+        Addr a;
         if (!resolve(s, &a)) continue;
         int k = slot_for(&a, 1);
         if (k >= 0) {
@@ -413,7 +562,10 @@ EXPORT net_start(const char *cfgpath) {
                     if (!_stricmp(v, names[k])) skin_pref = k;
                 if (!_stricmp(v, "random")) skin_pref = -1;
             } else if (!strncmp(line, "beard_chance=", 13)) beard_chance = atof(line + 13);
-            else if (!strncmp(line, "room=", 5)) room_hash = room_of(line + 5);
+            else if (!strncmp(line, "room=", 5)) {
+                room_hash = room_of(line + 5);
+                strncpy(room_code, line + 5, sizeof room_code - 1);
+            } else if (!strncmp(line, "steam=", 6)) st.want = atoi(line + 6) != 0;
         }
         fclose(f);
     }
@@ -444,6 +596,7 @@ EXPORT net_start(const char *cfgpath) {
     find_local_addrs();
     set_peers(peerstr);
     snprintf(status, sizeof status, peerstr[0] ? "port %d -> %s" : "port %d, waiting for players", my_port, peerstr);
+    st_start();
     return 1;
 }
 
@@ -453,21 +606,22 @@ EXPORT net_set(double i, double v) {
     return 0;
 }
 
+// UDP peers only: Steam peers all see the same lobby
 static void send_gossip(void) {
     PPacket pp;
     for (int t = 0; t < MAXP; t++) {
-        if (!alive(&peers[t])) continue;
+        if (!alive(&peers[t]) || peers[t].addr.sid) continue;
         memset(&pp, 0, sizeof pp);
         pp.magic = PMAGIC;
         pp.session = out.session;
         pp.room = room_hash;
         for (int i = 0; i < MAXP; i++) {
-            if (i == t || !alive(&peers[i])) continue;
-            pp.a[pp.count].ip = peers[i].addr.sin_addr.s_addr;
-            pp.a[pp.count].port = peers[i].addr.sin_port;
+            if (i == t || !alive(&peers[i]) || peers[i].addr.sid) continue;
+            pp.a[pp.count].ip = peers[i].addr.in.sin_addr.s_addr;
+            pp.a[pp.count].port = peers[i].addr.in.sin_port;
             pp.count++;
         }
-        if (pp.count) xsend(&pp, sizeof pp, (struct sockaddr *)&peers[t].addr, sizeof peers[t].addr);
+        if (pp.count) xsend(&pp, sizeof pp, &peers[t].addr);
     }
 }
 
@@ -492,7 +646,7 @@ EXPORT net_send(void) {
         out.nuev = alive(p) ? (unsigned short)nu : 0;
         memcpy(&out.ev[n], uq, out.nuev * sizeof(Event));
         int len = PK_HEAD + (n + out.nuev) * (int)sizeof(Event);
-        if (xsend(&out, len, (struct sockaddr *)&p->addr, sizeof p->addr) != len) {
+        if (xsend(&out, len, &p->addr) != len) {
             n_err++;
             last_err = WSAGetLastError();
         } else sent = 1;
@@ -540,16 +694,268 @@ static void take_unreliable(Peer *p, int slot, const Packet *pk) {
     }
 }
 
-// Drain the socket; keep each peer's newest state, deliver events. Returns 1 if something new arrived.
+static union { Packet p; EPacket ep; PPacket pp; char raw[2048]; } buf;
+
+// one datagram / P2P packet in buf (n bytes) from "from"; 1 if it brought a newer state
+static int handle(int n, const Addr *from) {
+    if (n < 8) { n_bad++; return 0; }
+    unsigned int magic = buf.p.magic;
+    if (magic == PMAGIC && n == (int)sizeof(PPacket)) {  // addresses of players our peer knows
+        int s = slot_for(from, 0);
+        if (from->sid || s < 0 || !peers[s].have_in || buf.pp.session != peers[s].session || buf.pp.room != room_hash) return 0;
+        for (unsigned int i = 0; i < buf.pp.count && i < MAXP; i++) {
+            Addr a = {0};
+            a.in.sin_family = AF_INET;
+            a.in.sin_addr.s_addr = buf.pp.a[i].ip;
+            a.in.sin_port = buf.pp.a[i].port;
+            slot_for(&a, 2);
+        }
+        return 0;
+    }
+    if (magic == EMAGIC && n >= EP_HEAD) {
+        int s = slot_for(from, 0);
+        if (s < 0) return 0;
+        Peer *p = &peers[s];
+        unsigned int cnt = buf.ep.count, pg = buf.ep.page, np = buf.ep.npages;
+        if (cnt > ES_PAGE || n != EP_HEAD + (int)(cnt * sizeof(EState)) || pg >= ES_PAGES || np > ES_PAGES ||
+            pg >= np || !p->have_in || buf.ep.session != p->session || (buf.ep.room != room_hash && !from->sid)) { n_bad++; return 0; }
+        int newer = !p->es_have || (int)(buf.ep.seq - p->es_last_seq) > 0 || (int)(p->es_last_seq - buf.ep.seq) > 600;
+        if (newer || (int)(buf.ep.seq - p->es_pg_seq[pg]) > 0) {
+            memcpy(p->es_pg[pg], buf.ep.e, cnt * sizeof(EState));
+            p->es_pg_cnt[pg] = cnt;
+            p->es_pg_seq[pg] = buf.ep.seq;
+        }
+        if (newer) {
+            p->es_last_seq = buf.ep.seq;
+            p->es_npages = np;
+            p->es_rx_time = GetTickCount();
+            p->es_have = 1;
+        }
+        return 0;
+    }
+    // other mod versions: tell the player (no slot for them)
+    if ((magic & 0xFFFFFF) == (MAGIC & 0xFFFFFF) || magic == 0x484D4350u) {
+        if (magic != MAGIC || buf.p.modver != MOD_VERSION) {
+            if (!is_self(from)) {
+                mism.addr = *from;
+                mism.modver = (magic == MAGIC) ? (int)buf.p.modver : 0;
+                mism.t = GetTickCount();
+                mism.n++;
+            }
+            return 0;
+        }
+    }
+    if (magic != MAGIC || n < PK_HEAD || buf.p.nev > EV_REL || buf.p.nuev > EV_UNREL ||
+        n != PK_HEAD + (int)((buf.p.nev + buf.p.nuev) * sizeof(Event))) { n_bad++; return 0; }
+    if (buf.p.session == out.session) return 0;  // our own packet (we are listed as a peer)
+    // another room code: not one of our players. Steam peers are in our lobby: the lobby is the check (a
+    // friend who joined through an invite may have another code or none)
+    if (buf.p.room != room_hash && !from->sid) {
+        if (!is_self(from)) {
+            wrongroom.addr = *from;
+            wrongroom.t = GetTickCount();
+            wrongroom.n++;
+        }
+        return 0;
+    }
+    int s = slot_for(from, 1);
+    if (s < 0) return 0;  // all slots taken
+    Peer *p = &peers[s];
+    // the same player known under another address: while it still talks from there, this is a
+    // second route (gossip, or UDP and Steam both) and is dropped; if it went quiet there, the player
+    // moved (VPN relay, NAT): the old slot takes the new address and keeps its streams
+    for (int i = 0; i < MAXP; i++) {
+        if (i == s || !peers[i].used || !peers[i].have_in || peers[i].session != buf.p.session) continue;
+        if (GetTickCount() - peers[i].last_rx < 1500) {
+            if (from->sid) {  // keep the UDP route; the lobby sync must not bring this one back at once
+                st.dup_sid[i] = from->sid;
+                st.dup_t[i] = GetTickCount();
+            }
+            free_slot(p);
+            p = NULL;
+            break;
+        }
+        free_slot(p);
+        peers[i].addr = *from;
+        s = i;
+        p = &peers[i];
+        break;
+    }
+    if (!p) return 0;
+    if (buf.p.session != p->session) {  // peer (re)started: both event streams begin again at id 1
+        p->session = buf.p.session;
+        reset_streams(p);
+    }
+    p->n_rx++;
+    take_events(p, s, &buf.p);
+    if (p->have_in && (int)(buf.p.seq - p->last_seq) <= 0 && (int)(p->last_seq - buf.p.seq) < 600) return 0;  // stale
+    take_unreliable(p, s, &buf.p);
+    memcpy(&p->in, &buf.p, sizeof p->in);
+    p->last_seq = buf.p.seq;
+    p->have_in = 1;
+    p->last_rx = GetTickCount();
+    memcpy(p->name, buf.p.name, 16);
+    p->name[16] = 0;
+    return 1;
+}
+
+// ---- Steam lobby: find / make the lobby of our room code, keep a slot for each member
+static void st_key(void) {
+    char t[80];
+    snprintf(t, sizeof t, "lobby:%s", room_code);  // not the packets' hash: the lobby data is public
+    if (room_hash) snprintf(st.key, sizeof st.key, "%08x", room_of(t));
+    else st.key[0] = 0;
+}
+
+static void st_leave(void) {
+    if (st.lobby) ((void(TC *)(void *, u64))VF(st.mm, 15))(st.mm, st.lobby);  // LeaveLobby
+    st.lobby = 0;
+    st.nmembers = 0;
+}
+
+static void st_join(u64 lobby) {
+    st_leave();
+    st.call = ((u64(TC *)(void *, u64))VF(st.mm, 14))(st.mm, lobby);  // JoinLobby
+    st.call_kind = 3;
+    strcpy(st.state, "joining a lobby");
+}
+
+static void st_search(void) {
+    ((void(TC *)(void *, const char *, const char *, int))VF(st.mm, 5))(st.mm, "hmroom", st.key, 0);  // equal
+    ((void(TC *)(void *, int))VF(st.mm, 8))(st.mm, 1);  // a free place
+    ((void(TC *)(void *, int))VF(st.mm, 9))(st.mm, 3);  // worldwide
+    st.call = ((u64(TC *)(void *))VF(st.mm, 4))(st.mm);  // RequestLobbyList
+    st.call_kind = 1;
+    if (!st.lobby) snprintf(st.state, sizeof st.state, "looking for room \"%s\"", room_code);
+}
+
+static void st_create(void) {
+    // public when there is a room code (found by the search), else friends only (joined from Steam)
+    st.call = ((u64(TC *)(void *, int, int))VF(st.mm, 13))(st.mm, st.key[0] ? 2 : 1, MAXP + 1);
+    st.call_kind = 2;
+    strcpy(st.state, "making a lobby");
+}
+
+static u64 st_member(u64 lobby, int i) {
+    u64 r = 0;
+    ((u64 * (TC *)(void *, u64 *, u64, int)) VF(st.mm, 18))(st.mm, &r, lobby, i);
+    return r;
+}
+
+// lobby members -> slots; Steam peers that left lose theirs
+static void st_sync(void) {
+    DWORD now = GetTickCount();
+    int n = st.lobby ? ((int(TC *)(void *, u64))VF(st.mm, 17))(st.mm, st.lobby) : 0;
+    st.nmembers = 0;
+    for (int i = 0; i < n && st.nmembers < MAXP + 1; i++) {
+        u64 m = st_member(st.lobby, i);
+        if (m) st.members[st.nmembers++] = m;
+    }
+    for (int i = 0; i < MAXP; i++)
+        if (peers[i].used && peers[i].addr.sid && !st_is_member(peers[i].addr.sid)) free_slot(&peers[i]);
+    for (int k = 0; k < st.nmembers; k++) {
+        u64 m = st.members[k];
+        if (m == st.me && !st.selftest) continue;
+        int dup = 0;
+        for (int i = 0; i < MAXP; i++)
+            if (st.dup_sid[i] == m && now - st.dup_t[i] < 10000) dup = 1;
+        if (dup) continue;
+        Addr a = {0};
+        a.sid = m;
+        int s = slot_for(&a, 1);
+        if (s < 0) continue;
+        peers[s].configured = 1;
+        ((unsigned char(TC *)(void *, u64))VF(st.net, 3))(st.net, m);  // AcceptP2PSessionWithUser
+    }
+    if (st.lobby) {
+        if (st.key[0]) snprintf(st.state, sizeof st.state, "room \"%s\", %d of 4 in the lobby", room_code, st.nmembers);
+        else snprintf(st.state, sizeof st.state, "Steam lobby, %d of 4 (friends join from Steam)", st.nmembers);
+    }
+}
+
+static void st_tick(void) {
+    if (!st.ok) return;
+    DWORD now = GetTickCount();
+    st.run_callbacks();
+    if (st.call) {
+        unsigned char failed = 0;
+        if (((unsigned char(TC *)(void *, u64, unsigned char *))VF(st.utl, 11))(st.utl, st.call, &failed)) {
+            // GetAPICallResult into a buffer that fits LobbyMatchList_t / LobbyCreated_t / LobbyEnter_t
+            static const int cb_of[4] = {0, 510, 513, 504};
+            union { unsigned int found; struct { unsigned int res, pad; u64 lobby; } made;
+                    struct { u64 lobby; unsigned int perm; unsigned char locked; unsigned int resp; } in; } r;
+            memset(&r, 0, sizeof r);
+            int kind = st.call_kind;
+            int ok = ((unsigned char(TC *)(void *, u64, void *, int, int, unsigned char *))VF(st.utl, 13))(
+                         st.utl, st.call, &r, kind == 3 ? 24 : kind == 2 ? 16 : 4, cb_of[kind], &failed) && !failed;
+            st.call = 0;
+            st.call_kind = 0;
+            if (st.stale) {
+                st.stale = 0;
+                if (ok && kind == 2 && r.made.res == 1) { st.lobby = r.made.lobby; st_leave(); }
+                if (ok && kind == 3 && r.in.resp == 1) { st.lobby = r.in.lobby; st_leave(); }
+                kind = 0;
+                st.next_search = now;
+            }
+            if (kind == 1) {
+                // join the fullest lobby of our room (then the lowest id); when we sit alone in ours, move to
+                // one with players or an older one, so two players who made lobbies at once end up together
+                u64 best = 0;
+                int bestn = 0;
+                for (unsigned int i = 0; ok && i < r.found; i++) {
+                    u64 l = 0;
+                    ((u64 * (TC *)(void *, u64 *, int)) VF(st.mm, 12))(st.mm, &l, (int)i);
+                    if (!l || l == st.lobby) continue;
+                    int m = ((int(TC *)(void *, u64))VF(st.mm, 17))(st.mm, l);
+                    if (m < 1) m = 1;
+                    if (!best || m > bestn || (m == bestn && l < best)) { best = l; bestn = m; }
+                }
+                if (!st.lobby) {
+                    if (best) st_join(best); else st_create();
+                } else if (best && st.nmembers <= 1 && (bestn > 1 || best < st.lobby)) st_join(best);
+                st.next_search = now + 5000;
+            } else if (kind == 2) {
+                if (ok && r.made.res == 1 && r.made.lobby) {
+                    st.lobby = r.made.lobby;
+                    ((unsigned char(TC *)(void *, u64, const char *, const char *))VF(st.mm, 20))(st.mm, st.lobby, "hmroom", st.key);
+                    st.next_sync = 0;
+                } else {
+                    snprintf(st.state, sizeof st.state, "could not make a lobby (%u)", r.made.res);
+                    st.next_search = now + 10000;
+                }
+            } else if (kind == 3) {
+                if (ok && r.in.resp == 1) { st.lobby = r.in.lobby; st.next_sync = 0; }
+                else {
+                    snprintf(st.state, sizeof st.state, "could not join the lobby (%u)", r.in.resp);
+                    st.next_search = now + 3000;
+                }
+            }
+        }
+    }
+    if (!st.call) {
+        if (st.join_req) {
+            u64 l = st.join_req;
+            st.join_req = 0;
+            if (l != st.lobby) st_join(l);
+        } else if (!st.lobby && (int)(now - st.next_search) >= 0) {
+            if (st.key[0]) st_search(); else st_create();
+        } else if (st.lobby && st.key[0] && st.nmembers <= 1 && (int)(now - st.next_search) >= 0) st_search();
+    }
+    if ((int)(now - st.next_sync) >= 0) {
+        st.next_sync = now + 500;
+        st_sync();
+    }
+}
+
+// Drain the socket and Steam; keep each peer's newest state, deliver events. Returns 1 if something new arrived.
 EXPORT net_poll(void) {
     if (sock == INVALID_SOCKET) return 0;
     int got = 0;
-    static union { Packet p; EPacket ep; PPacket pp; char raw[2048]; } buf;
     for (int i = 0; i < MAXP; i++) peers[i].poll_rel = peers[i].poll_unrel = 0;
     for (;;) {
-        struct sockaddr_in from;
-        int fl = sizeof from;
-        int n = recvfrom(sock, buf.raw, sizeof buf.raw, 0, (struct sockaddr *)&from, &fl);
+        Addr from = {0};
+        int fl = sizeof from.in;
+        int n = recvfrom(sock, buf.raw, sizeof buf.raw, 0, (struct sockaddr *)&from.in, &fl);
         if (n < 0) {
             int e = WSAGetLastError();
             if (e == WSAEWOULDBLOCK) break;
@@ -558,95 +964,16 @@ EXPORT net_poll(void) {
             if (e != WSAECONNRESET && e != WSAEMSGSIZE) break;
             continue;
         }
-        if (n < 8) { n_bad++; continue; }
-        unsigned int magic = buf.p.magic;
-        if (magic == PMAGIC && n == (int)sizeof(PPacket)) {  // addresses of players our peer knows
-            int s = slot_for(&from, 0);
-            if (s < 0 || !peers[s].have_in || buf.pp.session != peers[s].session || buf.pp.room != room_hash) continue;
-            for (unsigned int i = 0; i < buf.pp.count && i < MAXP; i++) {
-                struct sockaddr_in a = {0};
-                a.sin_family = AF_INET;
-                a.sin_addr.s_addr = buf.pp.a[i].ip;
-                a.sin_port = buf.pp.a[i].port;
-                slot_for(&a, 2);
-            }
-            continue;
-        }
-        if (magic == EMAGIC && n >= EP_HEAD) {
-            int s = slot_for(&from, 0);
-            if (s < 0) continue;
-            Peer *p = &peers[s];
-            unsigned int cnt = buf.ep.count, pg = buf.ep.page, np = buf.ep.npages;
-            if (cnt > ES_PAGE || n != EP_HEAD + (int)(cnt * sizeof(EState)) || pg >= ES_PAGES || np > ES_PAGES ||
-                pg >= np || !p->have_in || buf.ep.session != p->session || buf.ep.room != room_hash) { n_bad++; continue; }
-            int newer = !p->es_have || (int)(buf.ep.seq - p->es_last_seq) > 0 || (int)(p->es_last_seq - buf.ep.seq) > 600;
-            if (newer || (int)(buf.ep.seq - p->es_pg_seq[pg]) > 0) {
-                memcpy(p->es_pg[pg], buf.ep.e, cnt * sizeof(EState));
-                p->es_pg_cnt[pg] = cnt;
-                p->es_pg_seq[pg] = buf.ep.seq;
-            }
-            if (newer) {
-                p->es_last_seq = buf.ep.seq;
-                p->es_npages = np;
-                p->es_rx_time = GetTickCount();
-                p->es_have = 1;
-            }
-            continue;
-        }
-        // other mod versions: tell the player (no slot for them)
-        if ((magic & 0xFFFFFF) == (MAGIC & 0xFFFFFF) || magic == 0x484D4350u) {
-            if (magic != MAGIC || buf.p.modver != MOD_VERSION) {
-                if (!is_self(&from)) {
-                    mism.addr = from;
-                    mism.modver = (magic == MAGIC) ? (int)buf.p.modver : 0;
-                    mism.t = GetTickCount();
-                    mism.n++;
-                }
-                continue;
-            }
-        }
-        if (magic != MAGIC || n < PK_HEAD || buf.p.nev > EV_REL || buf.p.nuev > EV_UNREL ||
-            n != PK_HEAD + (int)((buf.p.nev + buf.p.nuev) * sizeof(Event))) { n_bad++; continue; }
-        if (buf.p.session == out.session) continue;  // our own packet (we are listed as a peer)
-        if (buf.p.room != room_hash) {  // another room code: not one of our players
-            if (!is_self(&from)) {
-                wrongroom.addr = from;
-                wrongroom.t = GetTickCount();
-                wrongroom.n++;
-            }
-            continue;
-        }
-        int s = slot_for(&from, 1);
-        if (s < 0) continue;  // all slots taken
-        Peer *p = &peers[s];
-        // the same player known under another address: while it still talks from there, this is a
-        // second route (gossip) and is dropped; if it went quiet there, the player moved (VPN relay,
-        // NAT): the old slot takes the new address and keeps its streams
-        for (int i = 0; i < MAXP; i++) {
-            if (i == s || !peers[i].used || !peers[i].have_in || peers[i].session != buf.p.session) continue;
-            if (GetTickCount() - peers[i].last_rx < 1500) { free_slot(p); p = NULL; break; }
-            free_slot(p);
-            peers[i].addr = from;
-            s = i;
-            p = &peers[i];
-            break;
-        }
-        if (!p) continue;
-        if (buf.p.session != p->session) {  // peer (re)started: both event streams begin again at id 1
-            p->session = buf.p.session;
-            reset_streams(p);
-        }
-        p->n_rx++;
-        take_events(p, s, &buf.p);
-        if (p->have_in && (int)(buf.p.seq - p->last_seq) <= 0 && (int)(p->last_seq - buf.p.seq) < 600) continue;  // stale
-        take_unreliable(p, s, &buf.p);
-        memcpy(&p->in, &buf.p, sizeof p->in);
-        p->last_seq = buf.p.seq;
-        p->have_in = 1;
-        p->last_rx = GetTickCount();
-        memcpy(p->name, buf.p.name, 16);
-        p->name[16] = 0;
-        got = 1;
+        got |= handle(n, &from);
+    }
+    st_tick();
+    for (int k = 0; st.ok && k < 256; k++) {
+        Addr from = {0};
+        int n = st_recv(buf.raw, sizeof buf.raw, &from.sid);
+        if (n == 0) break;
+        // only from players in our lobby
+        if (n < 0 || !from.sid || !st_is_member(from.sid)) { n_bad++; continue; }
+        got |= handle(n, &from);
     }
     write_log();
     return got;
@@ -779,7 +1106,7 @@ EXPORT net_es_send(void) {
         memcpy(ep.e, es_all + first, cnt * sizeof(EState));
         int len = EP_HEAD + (int)(cnt * sizeof(EState));
         for (int i = 0; i < MAXP; i++)
-            if (alive(&peers[i]) && xsend(&ep, len, (struct sockaddr *)&peers[i].addr, sizeof peers[i].addr) == len) ok = 1;
+            if (alive(&peers[i]) && xsend(&ep, len, &peers[i].addr) == len) ok = 1;
     }
     return ok;
 }
@@ -866,6 +1193,17 @@ __declspec(dllexport) const char *__cdecl net_status(void) {
     }
     return status;
 }
+// what Steam is doing ("off", "looking for room ...", "room ..., 2 of 4 in the lobby")
+__declspec(dllexport) const char *__cdecl net_steam_state(void) { return st.state; }
+// 1 when Steam is up, 0 when not (steam=0, no Steam, not the Steam game)
+EXPORT net_steam(void) { return st.ok; }
+// Steam's invite dialog for our lobby: 1 shown, 0 no overlay (game not started from Steam), -1 no Steam/lobby
+EXPORT net_steam_invite(void) {
+    if (!st.ok || !st.lobby) return -1;
+    if (!((unsigned char(TC *)(void *))VF(st.utl, 17))(st.utl)) return 0;  // IsOverlayEnabled
+    ((void(TC *)(void *, u64))VF(st.fr, 26))(st.fr, st.lobby);  // ActivateGameOverlayInviteDialog
+    return 1;
+}
 // 1 while some peer's packets are rejected because of a different mod version or room code
 EXPORT net_version_mismatch(void) { return mism_recent() || wrongroom_recent() ? 1 : 0; }
 // 1 once events could not be queued for a connected peer (the games may differ from then on)
@@ -885,6 +1223,15 @@ EXPORT net_set_peer(const char *list) {
 EXPORT net_set_room(const char *code) {
     room_hash = room_of(code);
     out.room = room_hash;
+    strncpy(room_code, code, sizeof room_code - 1);
+    room_code[sizeof room_code - 1] = 0;
+    if (st.ok) {  // to the lobby of the new code (or a friends-only one)
+        st_key();
+        st_leave();
+        st.stale = st.call != 0;  // a pending call ends first, then the search starts over
+        st.next_search = GetTickCount();
+        st.next_sync = 0;
+    }
     return room_hash != 0;
 }
 EXPORT net_set_name(const char *name) {

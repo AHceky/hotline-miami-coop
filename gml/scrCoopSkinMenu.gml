@@ -3,6 +3,7 @@
 //   I            the other players' Radmin / LAN IPs, comma separated (one is enough, the rest are learned)
 //   N            your name above your ghost
 //   K            room code: only players with the same code connect (empty = no code)
+//   F            Steam: invite friends to our lobby (needs the Steam overlay)
 if !instance_exists(objTitle) exit
 if global.coop_focus!=1 exit
 var d,k,i,s;
@@ -29,6 +30,13 @@ if keyboard_check_pressed(ord("K")) {
 io_clear()
 s=get_string("Room code (the same for every player; empty = none):",global.coop_room)
 if s!=global.coop_room {global.coop_room=s external_call(global.__net_set_room,s) scrCoopSaveCfg("room",s)}
+io_clear()
+}
+if keyboard_check_pressed(ord("F")) {
+io_clear()
+i=external_call(global.__net_steam_invite)
+if i=0 show_message("The Steam overlay is not available (the game was not started from Steam).##Invite from the Steam friends list instead: right-click a friend - Invite to Game. Or set the same room code (K) on every PC: the game finds the others through Steam by that code.")
+if i<0 show_message("Steam is not connected: "+external_call(global.__net_steam_state)+"##Start Steam (the game must be in your Steam library) and the co-op game again, or play over Radmin VPN (I).")
 io_clear()
 }
 if keyboard_check_pressed(ord("N")) {

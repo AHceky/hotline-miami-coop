@@ -18,7 +18,7 @@ if instance_exists(objTitle) scrCoopSkinMenuDraw()
 if external_call(global.__net_version_mismatch) or (external_call(global.__net_overflow) and (statustimer>0 or instance_exists(objTitle))) {
 // below the co-op settings on the title screen
 by=28
-if instance_exists(objTitle) by=76
+if instance_exists(objTitle) by=92
 draw_set_font(fntDate)
 draw_set_halign(fa_center)
 draw_set_color(c_black)

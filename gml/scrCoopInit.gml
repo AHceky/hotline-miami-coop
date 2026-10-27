@@ -36,6 +36,9 @@ global.__net_uevent4=external_define(global.coop_dll,"net_uevent4",dll_cdecl,ty_
 global.__net_es_by=external_define(global.coop_dll,"net_es_by",dll_cdecl,ty_real,2,ty_real,ty_real)
 global.__net_overflow=external_define(global.coop_dll,"net_overflow",dll_cdecl,ty_real,0)
 global.__net_set_room=external_define(global.coop_dll,"net_set_room",dll_cdecl,ty_real,1,ty_string)
+global.__net_steam=external_define(global.coop_dll,"net_steam",dll_cdecl,ty_real,0)
+global.__net_steam_state=external_define(global.coop_dll,"net_steam_state",dll_cdecl,ty_string,0)
+global.__net_steam_invite=external_define(global.coop_dll,"net_steam_invite",dll_cdecl,ty_real,0)
 global.coop_ok=external_call(global.__net_start,working_directory+"\hmcoop.txt")
 
 global.coop_trk_id=ds_list_create()

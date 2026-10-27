@@ -4,7 +4,7 @@ shifted by an offset, so a ghost shadows you in game. Your events are acknowledg
 usage: py -3 echo_peer.py [listen_port=7778] [game_port=7777] [seconds=600] [dx=40] [room code]
 (the game's hmcoop.txt needs peer=127.0.0.1:<listen_port> and the same room= as given here)
 
-Packet layout (net/hmnet.c, "HMC4", v0.9): magic, modver, session, seq, room, ack_session (u32 each),
+Packet layout (net/hmnet.c, "HMC4", v1.0): magic, modver, session, seq, room, ack_session (u32 each),
 name[16], 32 doubles of state from offset 40, ack (u32) at 296, nev / nuev (u16) at 300, 40-byte events
 from 304.
 """

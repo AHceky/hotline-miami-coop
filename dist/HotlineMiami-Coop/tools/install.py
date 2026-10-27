@@ -185,7 +185,7 @@ def read_cfg(path):
 def write_cfg(path, old, peer, name, skin, chance, room):
     with open(path, 'w', encoding='utf-8', newline='\r\n') as f:
         f.write(f'port={old.get("port", "7777")}\npeer={peer}\nname={name}\nskin={skin}\nbeard_chance={chance}\n'
-                f'room={room}\n')
+                f'room={room}\nsteam={old.get("steam", "1")}\n')
 
 
 def ask(prompt, default):
@@ -326,6 +326,11 @@ def main():
     # the co-op exe loads this fixed copy instead, the original file stays untouched
     from fix_bgm import fix_bgm
     fix_bgm(os.path.join(game, 'bgm.dll'), os.path.join(game, 'hmbgm.dll'))
+    # play through Steam: steam_api.dll starts outside Steam only with the game's AppID next to the exe
+    appid = os.path.join(game, 'steam_appid.txt')
+    if os.path.isfile(os.path.join(game, 'steam_api.dll')) and not os.path.isfile(appid):
+        with open(appid, 'w') as f:
+            f.write('219150')
     cfg = os.path.join(game, 'hmcoop.txt')
     if BATCH:
         configure_batch(cfg, bool(hm2))

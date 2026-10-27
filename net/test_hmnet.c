@@ -53,7 +53,7 @@ static void cfg(Net *n, int k, const char *peers, const char *room) {
     char path[MAX_PATH];
     snprintf(path, sizeof path, "%s\\hmnet_test%d.txt", getenv("TEMP"), k);
     FILE *f = fopen(path, "w");
-    fprintf(f, "port=%d\npeer=%s\nname=P%d\nroom=%s\n", 17001 + k, peers, k, room);
+    fprintf(f, "port=%d\npeer=%s\nname=P%d\nroom=%s\nsteam=0\n", 17001 + k, peers, k, room);
     fclose(f);
     n->start(path);
 }

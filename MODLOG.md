@@ -288,3 +288,38 @@ partner is streamed over UDP and drawn as a ghost in your level. Later: kill syn
   Lab4 lacked hmbgm.dll (made by the installer) -> "Error defining an external function" in objDevolver: lab setup,
   not the mod.
 - Not verified: real PCs over Radmin, bosses/elevators, long fights with many handoffs.
+
+## v0.9 (room code, weapon list after a restart, protocol hardening)
+- room= in hmcoop.txt / K in the title menu: FNV-1a of the code (spaces and case ignored) in every packet; other
+  codes are ignored and reported ("a player uses another room code"). Installer asks for it.
+- After R with the partner on the floor, the player who has been there longest sends the weapon list (events 18, 15,
+  19): guns are matched within 24 px, missing ones made, extra ones removed. Solo R forgets the floor (event 16).
+- hmnet: acks only count for the session they were meant for; reliable events capped per poll; a second route of the
+  same session is dropped while the first one still talks; ES pages cleared on reset.
+- Verified in labs: room mismatch (no connection, banner under the menu), weapon lists equal after R with a partner.
+
+## v1.0 (play through Steam)
+- hmnet.dll loads the game's own steam_api.dll (SDK of early 2013, AppID 219150) and calls its C++ interfaces
+  through their vtables (thiscall; CSteamID results through a hidden pointer). Slots checked against the
+  source-sdk-2013 headers of June 2013 (SteamMatchMaking009, SteamNetworking005, SteamUser016, SteamUtils006,
+  SteamFriends013) and by net/steam_probe.c in a lab: init (twice is fine), own SteamID, lobby create / data /
+  members / owner, worldwide lobby search, P2P send to ourselves.
+- Steam is a second transport next to UDP (Addr = sockaddr or SteamID). With a room code: lobby search on
+  "hmroom" (a salted hash of the code, not the packets' one) -> join the fullest, else create a public lobby for 4;
+  alone in a lobby, search again every 5 s and move to one with players or an older one (two lobbies made at once
+  merge). Without a code: a friends-only lobby, friends join with "Join game" (GameLobbyJoinRequested_t, a
+  CCallbackBase with a hand-made vtable; MSVC puts Run(param, io, call) before Run(param)) or +connect_lobby.
+- Members are synced every 500 ms into slots (configured, AcceptP2PSessionWithUser); only members' P2P packets are
+  read, and they skip the room code check (the lobby is the check). A member that already reaches us over UDP keeps
+  that route (10 s block). Call results are polled with ISteamUtils::IsAPICallCompleted / GetAPICallResult, so it
+  works whether or not the game's Steamworks extension also pumps callbacks.
+- Packets stay under Steam's 1200-byte unreliable limit: 6 unreliable events per packet (1184 B), enemy pages of 40
+  (5 pages, 200 enemies, 1144 B).
+- Title menu: "STEAM: <state> (F - INVITE FRIENDS)"; F opens Steam's invite dialog when the overlay exists (game
+  started from Steam), else explains the friends list / room code. steam=0 in hmcoop.txt turns it off. The
+  installer writes steam=1 and creates steam_appid.txt (219150) if it is missing.
+- HMNET_STEAM_SELF=1 (test aid): our own SteamID counts as a peer, so two labs on one Steam account connect through
+  Steam P2P (Steam delivers a packet to ourselves to the other process). Verified that way: room search -> same
+  lobby, connected, chapter 1 enemies owned/puppeted, kills and F9 consistent; +connect_lobby joins the given lobby;
+  different codes -> separate lobbies.
+- Not verified: two real Steam accounts, the overlay invite dialog, Steam not running.
