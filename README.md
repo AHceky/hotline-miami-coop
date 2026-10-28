@@ -2,7 +2,7 @@
 
 [Русская версия](README.ru.md)
 
-An unofficial fan-made **mod** that adds online co-op for **2-4 players** to **Hotline Miami 1**
+An unofficial fan-made **mod** that adds online co-op (multiplayer) for **2-4 players** to **Hotline Miami 1**
 (Steam version, the GameMaker 7 `HotlineMiami_Original.exe`). It is not a standalone game: every
 player needs their own copy of Hotline Miami. Each player runs their own game, and the mod links the
 games and keeps the world in sync. You can play **through Steam** with friends, with no IPs and no
