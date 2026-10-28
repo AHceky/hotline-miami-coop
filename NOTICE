@@ -1,0 +1,11 @@
+Hotline Miami co-op mod - notice
+
+This is an unofficial fan mod. It is not made, endorsed or supported by Dennaton Games or Devolver Digital.
+Hotline Miami, Hotline Miami 2 and their assets belong to their owners.
+
+The mod does not contain or distribute any part of the games: it patches the copy of Hotline Miami the
+player owns (HotlineMiami_Original.exe) on the player's own PC, and reads the HM2 character sprites from the
+player's own Hotline Miami 2 install. You need your own copy of the game(s).
+
+The MIT license in LICENSE covers the mod's own code only. The bundled Python (python/ in the release archive)
+is under the Python Software Foundation License.

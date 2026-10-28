@@ -57,7 +57,10 @@ def main(argv):
     run([z, 'cc', '-target', 'x86-windows-gnu', '-shared', '-O2', '-s', '-Wall', '-o', 'hmnet.dll', 'hmnet.c',
          '-lws2_32'], cwd=BUILD)
     run([z, 'cc', '-target', 'x86-windows-gnu', '-O2', '-o', 'test_hmnet.exe', 'test_hmnet.c', '-lws2_32'], cwd=BUILD)
-    run([os.path.join(BUILD, 'test_hmnet.exe'), BUILD, '20'], cwd=BUILD)
+    # the test runs on real sockets with random loss: several runs, so a rare failure is not missed
+    for loss in ('20', '20', '20', '40', '40'):
+        run([os.path.join(BUILD, 'test_hmnet.exe'), BUILD, loss], cwd=BUILD)
+    zig_ver = subprocess.run([z, 'version'], capture_output=True, text=True).stdout.strip()
 
     # dist folder: tools and GML replaced by fresh copies of the sources
     shutil.copy(os.path.join(BUILD, 'hmnet.dll'), DIST)
@@ -71,7 +74,7 @@ def main(argv):
     with open(os.path.join(DIST, 'tools', 'SHA256.txt'), 'w', newline='\r\n') as f:
         f.write(f'hmnet.dll {sha(os.path.join(DIST, "hmnet.dll"))}\n'
                 f'(built from tools/hmnet.c {sha(os.path.join(DIST, "tools", "hmnet.c"))} with '
-                f'"zig cc -target x86-windows-gnu -shared -O2 -s -o hmnet.dll hmnet.c -lws2_32")\n')
+                f'"zig cc -target x86-windows-gnu -shared -O2 -s -Wall -o hmnet.dll hmnet.c -lws2_32", zig {zig_ver})\n')
     shutil.rmtree(os.path.join(DIST, 'tools', '__pycache__'), ignore_errors=True)
 
     # zip

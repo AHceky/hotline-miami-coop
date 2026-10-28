@@ -215,22 +215,24 @@ def configure(cfg_path, has_beard):
         if name:
             break
         print(T('Только латинские буквы и цифры.', 'Latin letters and digits only.'))
-    print(T('IP других игроков (до трёх, через запятую): в Radmin VPN это адрес вида 26.x.x.x рядом с ником.',
-            "Other players' IPs (up to three, comma separated): in Radmin VPN it is the 26.x.x.x address next to the nick."))
-    print(T('Достаточно вписать одного - остальных игра найдёт сама.',
-            'One is enough - the game finds the others.'))
+    print(T('Через Steam IP не нужны: просто нажми Enter, а ниже впиши код комнаты, одинаковый у всех.',
+            'Through Steam no IPs are needed: just press Enter, and give everyone the same room code below.'))
+    print(T('Через Radmin VPN: IP других игроков (до трёх, через запятую) - адрес вида 26.x.x.x рядом с ником;',
+            "Over Radmin VPN: the other players' IPs (up to three, comma separated) - the 26.x.x.x address next to"))
+    print(T('достаточно вписать одного, остальных игра найдёт сама.',
+            'the nick; one is enough, the game finds the others.'))
     while True:
-        peer = ask(T('IP других игроков', "Other players' IPs"), old.get('peer', '') or '26.')
+        peer = ask(T('IP других игроков (Enter - без них)', "Other players' IPs (Enter - none)"), old.get('peer', ''))
         parts = [x.strip() for x in re.split(r'[,; ]+', peer) if x.strip()]
-        if parts and all(re.fullmatch(r'[\w.\-]+(:\d+)?', x) and x != '26.' for x in parts):
+        if all(re.fullmatch(r'[\w.\-]+(:\d+)?', x) and x != '26.' for x in parts):
             break
         print(T('Не похоже на адрес, попробуй ещё раз (например 26.12.34.56 или 26.1.1.1, 26.2.2.2).',
                 "That doesn't look like an address, try again (e.g. 26.12.34.56 or 26.1.1.1, 26.2.2.2)."))
     peer = ','.join(x if ':' in x else x + ':7777' for x in parts[:3])
-    print(T('Код комнаты - одно слово, одинаковое у всех игроков (латиница и цифры). С ним к вам не подключится',
-            'Room code - one word, the same for every player (latin letters and digits). With it nobody who'))
-    print(T('посторонний, который не знает код. Enter без кода - без защиты.',
-            "doesn't know the code can join you. Enter alone - no protection."))
+    print(T('Код комнаты - одно слово, одинаковое у всех игроков (латиница и цифры). Через Steam по нему игроки',
+            'Room code - one word, the same for every player (latin letters and digits). Through Steam the players'))
+    print(T('находят друг друга; кто введёт тот же код, попадёт к вам - возьми необычное слово. Enter - без кода.',
+            'find each other by it; whoever types the same code joins you - pick an unusual word. Enter - none.'))
     room = clean_room(ask(T('Код комнаты', 'Room code'), old.get('room', '')))
     skin, chance = 'jacket', old.get('beard_chance', '50')
     if has_beard:
@@ -316,7 +318,8 @@ def main():
     hm2 = find_hm2(game)
     print('Hotline Miami 2: ' + (hm2 or T('не найдена (персонажи HM2 будут недоступны)', 'not found (no HM2 characters)')))
     ans = ('y' if '--windowed' in sys.argv else 'n') if BATCH else input(
-        T('Запускать в окне, а не на весь экран? (y/N): ', 'Run in a window instead of fullscreen? (y/N): ')).strip().lower()
+        T('Запускать в окне, а не на весь экран? Полный экран с модом ещё мало проверен (Y/n): ',
+          'Run in a window instead of fullscreen? Fullscreen is little tested with the mod (Y/n): ')).strip().lower() or 'y'
     cmd = [sys.executable, os.path.join(TOOLS, 'build_mod.py'),
            os.path.join(game, 'HotlineMiami_Original.exe'), os.path.join(game, 'HotlineMiami_Coop.exe')]
     cmd += ['--hm2', hm2] if hm2 else ['--no-hm2']

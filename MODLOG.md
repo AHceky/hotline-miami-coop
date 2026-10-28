@@ -349,3 +349,30 @@ partner is streamed over UDP and drawn as a ghost in your level. Later: kill syn
   after a debug jump + F9 is global.barehanded unset by the jump (debug only, like the music error).
 - Verified in labs (one Steam account, HMNET_STEAM_SELF=1): room search -> one lobby, connected, chapter 1
   kills/F9 consistent; no code -> "ready, no room code" and no lobby.
+
+## v1.2 (public beta; fixes from the release-readiness review)
+- Correction: the v1.1 notes above ("nothing lost or doubled", tests passing at 0-40 %) came from one run per loss
+  rate. A review that ran the test many times found reliable events delivered twice: 2 of 12 runs failed at 20 %,
+  5 of 6 at 40 %. Cause: rxi renumbering. A slot made by gossip knocks with fresh epochs and is then made again on
+  the first packet (new rxi), and when it gets its old streams back from the grave the rxi flips once more. Each
+  change made the peer renumber its unacked events, including ones the receiver had already delivered.
+- Fix: no renumbering and no rxi. The packet carries "first" (the sender's oldest unacked id) instead. A receiver
+  that meets a new epoch, or follows none, goes on from "first", so nothing already acked comes twice. A stream we
+  already follow is only left for one from a peer that has heard us (ack_txe set): knocks of a new slot no longer
+  pull the receiver off its stream. Result: 18 runs (12 at 20 %, 6 at 40 %) all passed. Only the deliberate
+  "lost its streams outright" case repeated an event, once: events delivered but not yet acked when the state was
+  lost, which cannot be told apart. make_release now runs the test 5 times (3 at 20 %, 2 at 40 %).
+- Steam room code: other lobby members see our packets, so the packets' 32-bit code hash could be copied by a
+  stranger who joined the public lobby. Steam packets now carry a tag per pair of players (st_tag: mix of a slow
+  hash of the code, 2^20 rounds, with both SteamIDs). The lobby key comes from the same slow hash. Guessing the code
+  costs the slow hash per try; short codes can still be guessed, so the texts ask for an unusual word.
+- Installer: IPs may be left empty (Steam only); Steam is explained first; windowed mode is the default (full screen
+  is little tested); the room code text no longer promises protection. LICENSE is plain MIT (GitHub detects it);
+  the unofficial / your-own-copy / Python notes moved to NOTICE. hmnet_log.txt starts with the mod version.
+  SHA256.txt names the zig version. .github/ISSUE_TEMPLATE/bug_report.yml asks for version, connection and
+  hmnet_log.txt from every player. test_two_instances.jpg (a whole-desktop screenshot) removed from the tree. It
+  is still in the history: removing it from there would need a rewrite and a force push.
+- Verified in labs: Steam self-test (room search, kills, F9 consistent with the per-pair tags), UDP with 10 % loss
+  (kills, F9 consistent).
+- Still not verified: two PCs, two Steam accounts, full screen, bosses, elevators, long sessions, memory with
+  4 players and HM2 skins (2.04 GB peak measured earlier, limit about 2.1 GB).

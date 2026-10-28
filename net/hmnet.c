@@ -29,8 +29,9 @@
 //
 // Steam: with Steam running, the game's own steam_api.dll (AppID 219150) is used as a second transport
 // next to UDP. Players with the same room code find each other through a Steam lobby search (no IPs, no
-// VPN): the code finds the lobby, and every packet must still carry it, so a stranger who joins the
-// public lobby by its id gets nothing. Without a room code, F in the menu opens a friends-only lobby that
+// VPN): the code finds the lobby, and every packet must still prove it (a tag per pair of players, see
+// st_tag), so a stranger who joins the public lobby by its id is ignored unless they guess the code - pick
+// an unusual one. Without a room code, F in the menu opens a friends-only lobby that
 // Steam friends join with "Join game" / an invite (their co-op game must already run); there the lobby is
 // the only check. Lobby members are the only Steam peers; their packets go through Steam P2P (relayed
 // when a direct path fails). Packets are kept under 1200 bytes, Steam's unreliable limit.
@@ -50,7 +51,7 @@
 #define MAGIC 0x34434D48u  /* "HMC4": state + events (carries the mod version, kept from now on) */
 #define EMAGIC 0x35454D48u /* "HME5": enemy state page */
 #define PMAGIC 0x34504D48u /* "HMP4": addresses of the other peers we know */
-#define MOD_VERSION 110    /* v1.1: compared with the peers', a difference is reported */
+#define MOD_VERSION 120    /* v1.2: compared with the peers', a difference is reported */
 #define MAXP 3             /* peers (players besides us) */
 #define ES_PAGE 40         /* enemies per enemy-state packet (1144 bytes) */
 #define ES_PAGES 5         /* -> up to 200 enemies sent */
@@ -80,12 +81,13 @@ typedef struct {
     unsigned int session;  // random per game launch: a restarted peer resets its event streams
     unsigned int seq;
     unsigned int room;     // hash of the room code (0 = none): other codes are ignored
-    // Event streams are numbered from 1 within an epoch (random id). A side that loses its receive state for
-    // a peer (slot freed and made again: lobby left / rejoined) gets a new rxi; the peer then renumbers its
-    // unacked events into a new epoch, so the streams meet at id 1 again without a restart.
+    // Event streams are numbered from 1 within an epoch (random id, new when the sender starts its stream
+    // to us again). A receiver that meets a new epoch, or lost what it had (slot freed and made again with
+    // nothing kept), follows the stream from the sender's oldest unacked event ("first"), so the two sides
+    // meet again without a restart and nothing already acked comes twice.
     unsigned int txe;      // epoch of the sender's event stream to us
-    unsigned int rxi;      // the sender's receive state for us (changes when it lost it)
-    unsigned int ack_txe;  // the epoch of our stream that "ack" is about
+    unsigned int first;    // the sender's oldest unacked event to us (its next one when none waits)
+    unsigned int ack_txe;  // the epoch of our stream that "ack" is about (0 = the sender has not heard us)
     char name[16];
     double f[NFIELDS];
     unsigned int ack;    // highest in-order event id we have delivered from this peer
@@ -150,9 +152,7 @@ typedef struct {
     unsigned int out_first, out_next;
     unsigned int rx_next;     // next event id expected from this peer
     unsigned int out_epoch;   // epoch of our stream to this peer (txe)
-    unsigned int my_rxi;      // our receive state for this peer (rxi)
     unsigned int rx_txe;      // epoch of the peer's stream we follow (0 = none yet)
-    unsigned int peer_rxi;    // the peer's rxi as last seen (0 = none yet)
     unsigned long n_overflow; // events that did not fit in outq (link too slow / peer gone)
     // enemy state from this peer, by page; a page counts while it is from one of the newest seqs
     EState es_pg[ES_PAGES][ES_PAGE];
@@ -352,6 +352,41 @@ static unsigned int room_of(const char *code) {
     return any ? (h ? h : 1) : 0;
 }
 
+// Steam: the room code is checked with a tag per pair of players, made from a slow hash of the code. Other
+// lobby members see our packets, so a plain hash of the code there could simply be copied; this tag only
+// fits one sender and one receiver, and guessing the code from it costs a slow hash per guess.
+static u64 room_secret = 0;  // 0 = no room code
+static u64 mix64(u64 z) {
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+static void set_secret(const char *code) {
+    u64 h = 1469598103934665603ull;
+    int any = 0;
+    for (const unsigned char *c = (const unsigned char *)code; *c; c++) {
+        if (*c <= ' ') continue;
+        h = (h ^ (unsigned char)tolower(*c)) * 1099511628211ull;  // like room_of: spaces and case ignored
+        any = 1;
+    }
+    if (!any) { room_secret = 0; return; }
+    for (unsigned int i = 0; i < (1u << 20); i++) h = mix64(h + 0x9E3779B97F4A7C15ull + i);
+    room_secret = h ? h : 1;
+}
+// the "room" field of a packet from one Steam user to another (0 without a room code)
+static unsigned int st_tag(u64 from, u64 to) {
+    if (!room_secret) return 0;
+    u64 h = mix64(room_secret ^ mix64(from) ^ mix64(to ^ 0x5EED5EED5EEDull));
+    unsigned int t = (unsigned int)(h ^ (h >> 32));
+    return t ? t : 1;
+}
+// the room field a packet from "from" must carry (UDP: the code's hash; Steam: the pair's tag, or anything
+// without a room code of our own - the lobby is the check then)
+static int room_ok(unsigned int room, const Addr *from) {
+    if (!from->sid) return room == room_hash;
+    return !room_secret || room == st_tag(from->sid, st.me);
+}
+
 static int alive(const Peer *p) { return p->used && p->have_in && GetTickCount() - p->last_rx < 3000; }
 
 // "0.8", "0.61"
@@ -366,6 +401,9 @@ static void write_log(void) {
     last_log = now;
     FILE *f = fopen(logpath, "w");
     if (!f) return;
+    char v[16];
+    ver_str(v, sizeof v, MOD_VERSION);
+    fprintf(f, "co-op mod v%s\n", v);
     fprintf(f, "status: %s\n", status);
     fprintf(f, "sent: %lu  bad packets: %lu  socket errors: %lu (last %d)  events sent: %lu received: %lu"
                "  unreliable dropped: %lu\n", n_tx, n_bad, n_err, last_err, n_ev_tx, n_ev_rx, n_udrop);
@@ -481,9 +519,7 @@ static void reset_streams(Peer *p) {
     p->out_first = p->out_next = 1;
     p->rx_next = 1;
     p->out_epoch = new_id();
-    p->my_rxi = new_id();
     p->rx_txe = 0;
-    p->peer_rxi = 0;
     p->have_in = 0;
     p->es_have = 0;
     p->es_npages = 0;
@@ -534,9 +570,7 @@ static void start_streams(Peer *p) {
         p->out_next = o->out_next;
         p->rx_next = o->rx_next;
         p->out_epoch = o->out_epoch;
-        p->my_rxi = o->my_rxi;
         p->rx_txe = o->rx_txe;
-        p->peer_rxi = o->peer_rxi;
         p->n_overflow = o->n_overflow;
         grave[i].used = 0;
         return;
@@ -638,6 +672,7 @@ EXPORT net_start(const char *cfgpath) {
             } else if (!strncmp(line, "beard_chance=", 13)) beard_chance = atof(line + 13);
             else if (!strncmp(line, "room=", 5)) {
                 room_hash = room_of(line + 5);
+                set_secret(line + 5);
                 strncpy(room_code, line + 5, sizeof room_code - 1);
             } else if (!strncmp(line, "steam=", 6)) st.want = atoi(line + 6) != 0;
         }
@@ -713,8 +748,9 @@ EXPORT net_send(void) {
         if (!alive(p) && (n_send + i) % PROBE_EVERY) continue;
         out.ack = p->rx_next - 1;
         out.ack_txe = p->rx_txe;
+        out.room = p->addr.sid ? st_tag(st.me, p->addr.sid) : room_hash;
         out.txe = p->out_epoch;
-        out.rxi = p->my_rxi;
+        out.first = p->out_first;
         unsigned int n = 0;
         for (unsigned int id = p->out_first; id < p->out_next && n < EV_REL; id++, n++)
             out.ev[n] = p->outq[id % EV_QUEUE];
@@ -761,29 +797,13 @@ static void take_events(Peer *p, int slot, const Packet *pk) {
     }
 }
 
-// our unacked events again from id 1, in a new epoch (the peer lost what it had from us)
-static void renumber_out(Peer *p) {
-    static Event tmp[EV_QUEUE];
-    unsigned int k = p->out_next - p->out_first;
-    for (unsigned int i = 0; i < k; i++) tmp[i] = p->outq[(p->out_first + i) % EV_QUEUE];
-    for (unsigned int i = 0; i < k; i++) {
-        tmp[i].id = i + 1;
-        p->outq[(i + 1) % EV_QUEUE] = tmp[i];
-    }
-    p->out_first = 1;
-    p->out_next = k + 1;
-    p->out_epoch = new_id();
-}
-
-// from a packet newer than any before: follow the peer's epochs
+// from a packet newer than any before: follow the peer's stream to us. A stream we already follow is only
+// left for one from a peer that has heard us (ack_txe set): before that it only knocks, from a slot that
+// may still get its old streams back.
 static void sync_epochs(Peer *p, const Packet *pk) {
-    if (pk->rxi != p->peer_rxi) {
-        if (p->peer_rxi) renumber_out(p);
-        p->peer_rxi = pk->rxi;
-    }
-    if (pk->txe != p->rx_txe) {  // the peer's stream to us started again (it reset or renumbered)
+    if (pk->txe != p->rx_txe && (pk->ack_txe || !p->rx_txe)) {
         p->rx_txe = pk->txe;
-        p->rx_next = 1;
+        p->rx_next = pk->first;
     }
 }
 
@@ -821,7 +841,7 @@ static int handle(int n, const Addr *from) {
         Peer *p = &peers[s];
         unsigned int cnt = buf.ep.count, pg = buf.ep.page, np = buf.ep.npages;
         if (cnt > ES_PAGE || n != EP_HEAD + (int)(cnt * sizeof(EState)) || pg >= ES_PAGES || np > ES_PAGES ||
-            pg >= np || !p->have_in || buf.ep.session != p->session || (buf.ep.room != room_hash && !(from->sid && !room_hash))) { n_bad++; return 0; }
+            pg >= np || !p->have_in || buf.ep.session != p->session || !room_ok(buf.ep.room, from)) { n_bad++; return 0; }
         int newer = !p->es_have || (int)(buf.ep.seq - p->es_last_seq) > 0 || (int)(p->es_last_seq - buf.ep.seq) > 600;
         if (newer || (int)(buf.ep.seq - p->es_pg_seq[pg]) > 0) {
             memcpy(p->es_pg[pg], buf.ep.e, cnt * sizeof(EState));
@@ -853,7 +873,7 @@ static int handle(int n, const Addr *from) {
     if (buf.p.session == out.session) return 0;  // our own packet (we are listed as a peer)
     // another room code: not one of our players. Without a code of our own a Steam peer is checked by the
     // lobby only (a friend who joined from Steam may have any code); with one, a Steam peer needs it too
-    if (buf.p.room != room_hash && !(from->sid && !room_hash)) {
+    if (!room_ok(buf.p.room, from)) {
         if (!is_self(from)) {
             wrongroom.addr = *from;
             wrongroom.t = GetTickCount();
@@ -907,9 +927,8 @@ static int handle(int n, const Addr *from) {
 
 // ---- Steam lobby: find / make the lobby of our room code, keep a slot for each member
 static void st_key(void) {
-    char t[80];
-    snprintf(t, sizeof t, "lobby:%s", room_code);  // not the packets' hash: the lobby data is public
-    if (room_hash) snprintf(st.key, sizeof st.key, "%08x", room_of(t));
+    // public (anyone can list the lobbies): from the slow secret, not the packets' hash
+    if (room_secret) snprintf(st.key, sizeof st.key, "%08x", (unsigned int)mix64(room_secret ^ 0x6C6F626279ull));
     else st.key[0] = 0;
 }
 
@@ -1236,7 +1255,6 @@ EXPORT net_es_send(void) {
     int ok = 0;
     ep.magic = EMAGIC;
     ep.session = out.session;
-    ep.room = room_hash;
     ep.seq = ++es_seq;
     ep.npages = (unsigned short)np;
     for (unsigned int pg = 0; pg < np; pg++) {
@@ -1246,8 +1264,11 @@ EXPORT net_es_send(void) {
         ep.count = cnt;
         memcpy(ep.e, es_all + first, cnt * sizeof(EState));
         int len = EP_HEAD + (int)(cnt * sizeof(EState));
-        for (int i = 0; i < MAXP; i++)
-            if (alive(&peers[i]) && xsend(&ep, len, &peers[i].addr) == len) ok = 1;
+        for (int i = 0; i < MAXP; i++) {
+            if (!alive(&peers[i])) continue;
+            ep.room = peers[i].addr.sid ? st_tag(st.me, peers[i].addr.sid) : room_hash;
+            if (xsend(&ep, len, &peers[i].addr) == len) ok = 1;
+        }
     }
     return ok;
 }
@@ -1370,6 +1391,7 @@ EXPORT net_set_peer(const char *list) {
 EXPORT net_set_room(const char *code) {
     unsigned int before = room_hash;
     room_hash = room_of(code);
+    set_secret(code);
     out.room = room_hash;
     strncpy(room_code, code, sizeof room_code - 1);
     room_code[sizeof room_code - 1] = 0;

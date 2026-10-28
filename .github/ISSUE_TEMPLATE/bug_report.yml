@@ -1,0 +1,59 @@
+name: Баг / Bug report
+description: Что-то не работает в моде / Something in the mod does not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо! Без логов баг почти никогда не найти, поэтому приложите их (перетащите файлы в поле ниже).
+        Thanks! Without the logs a bug can almost never be found, so please attach them (drag the files into the field below).
+
+        - `hmnet_log.txt` - в папке игры / in the game folder (`...\steamapps\common\hotline_miami`), **от каждого игрока / from every player**
+        - `install_log.txt` - если не установилось / if the install failed: `%LOCALAPPDATA%\HotlineMiamiCoop\install_log.txt`
+
+        В `hmnet_log.txt` есть IP-адреса и SteamID игроков. Если не хотите показывать их всем, замажьте их.
+        `hmnet_log.txt` contains the players' IP addresses and SteamIDs. Blank them out if you do not want to show them to everyone.
+  - type: input
+    id: version
+    attributes:
+      label: Версия мода / Mod version
+      description: В названии архива или установщика и в первой строке hmnet_log.txt / In the archive or installer name and on the first line of hmnet_log.txt
+      placeholder: v1.2
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Как вы подключаетесь / How you connect
+      options:
+        - Steam (код комнаты / room code)
+        - Steam (друзья, F / friends, F)
+        - Radmin VPN
+        - LAN / другое / other
+    validations:
+      required: true
+  - type: input
+    id: players
+    attributes:
+      label: Сколько игроков, окно или полный экран / How many players, window or full screen
+      placeholder: 2, в окне / 2, windowed
+  - type: input
+    id: where
+    attributes:
+      label: Где случилось / Where it happened
+      description: Глава и этаж / Chapter and floor
+      placeholder: Chapter 3, 2nd floor
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось и что вы делали перед этим / What happened and what you did before
+      description: У кого из игроков и что видно на экране; текст ошибки, если была / Which player saw what; the error text if there was one
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи / Logs
+      description: Перетащите сюда hmnet_log.txt от всех игроков / Drag hmnet_log.txt from every player here
+    validations:
+      required: true

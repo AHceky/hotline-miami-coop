@@ -1,6 +1,6 @@
 # Hotline Miami 1 co-op mod - handoff for a new chat
 
-Current release: **v1.1** (`dist/HotlineMiami-Coop-v1.1.zip`, built by `tools/make_release.py`). Full technical journal: `MODLOG.md` (read it first).
+Current release: **v1.2** (`dist/HotlineMiami-Coop-v1.2.zip`, public beta, built by `tools/make_release.py`). Full technical journal: `MODLOG.md` (read it first).
 
 Repo: https://github.com/AHceky/hotline-miami-coop (public). Release zips go to GitHub Releases
 (`gh release create vX dist/HotlineMiami-Coop-vX.zip`); gh is at "C:\Program Files\GitHub CLI\gh.exe".

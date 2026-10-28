@@ -4,7 +4,7 @@ shifted by an offset, so a ghost shadows you in game. Your events are acknowledg
 usage: py -3 echo_peer.py [listen_port=7778] [game_port=7777] [seconds=600] [dx=40] [room code]
 (the game's hmcoop.txt needs peer=127.0.0.1:<listen_port> and the same room= as given here)
 
-Packet layout (net/hmnet.c, "HMC4", v1.1): magic, modver, session, seq, room, txe, rxi, ack_txe (u32 each),
+Packet layout (net/hmnet.c, "HMC4", v1.2): magic, modver, session, seq, room, txe, first, ack_txe (u32 each),
 name[16] at 32, 32 doubles of state from offset 48, ack (u32) at 304, nev / nuev (u16) at 308, 40-byte events
 from 312.
 """
@@ -41,7 +41,7 @@ s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.bind(('127.0.0.1', listen))
 s.settimeout(1)
 session = random.randrange(1, 2 ** 32)
-txe, rxi = random.randrange(1, 2 ** 32), random.randrange(1, 2 ** 32)  # our (empty) stream, our receive state
+txe = random.randrange(1, 2 ** 32)  # our (empty) stream: its oldest unacked event is always 1
 ack, game_txe = 0, 0
 end = time.time() + secs
 n = 0
@@ -61,7 +61,7 @@ while time.time() < end:
         ack = max(ack, struct.unpack_from('<I', d, HEAD + (nev - 1) * EVENT)[0])
     p = bytearray(d[:HEAD])
     struct.pack_into('<I', p, 8, session)
-    struct.pack_into('<IIII', p, 16, room, txe, rxi, game_txe)
+    struct.pack_into('<IIII', p, 16, room, txe, 1, game_txe)
     p[NAME:NAME + 16] = b'ECHO'.ljust(16, b'\0')
     x = struct.unpack_from('<d', p, STATE + 2 * 8)[0]
     struct.pack_into('<d', p, STATE + 2 * 8, x + dx)

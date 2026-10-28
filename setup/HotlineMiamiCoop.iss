@@ -4,7 +4,7 @@
 ; asks for the game folder, name, other players' IPs and character, then runs
 ; tools\install.py --batch, which builds HotlineMiami_Coop.exe from the player's own game copy.
 
-#define AppVer "1.1"
+#define AppVer "1.2"
 
 [Setup]
 AppId={{27CF4983-360A-4E43-ABD7-2843BE075C18}
@@ -62,7 +62,7 @@ ru.BadName=Имя: только латинские буквы, цифры, пр�
 ru.CharTitle=Персонаж
 ru.CharSub=Кем ты будешь играть
 ru.CharLabel=Персонаж (из HM2 — нужна Hotline Miami 2 в Steam; менять можно в меню игры клавишей C):
-ru.Windowed=Запускать в окне, а не на весь экран
+ru.Windowed=Запускать в окне, а не на весь экран (полный экран с модом ещё мало проверен)
 ru.Building=Собираю HotlineMiami_Coop.exe из твоей копии игры (около минуты)...
 ru.BuildFailed=Не получилось собрать кооп-версию игры. Оригинальные файлы не тронуты.%n%nЖурнал: %1%n%n%2
 ru.RunGame=Запустить Hotline Miami Co-op
@@ -81,7 +81,7 @@ en.BadName=Name: latin letters, digits, space, dot, dash and underscore only.
 en.CharTitle=Character
 en.CharSub=Who you play as
 en.CharLabel=Character (HM2 ones need Hotline Miami 2 on Steam; change it in the game menu with C):
-en.Windowed=Run in a window instead of full screen
+en.Windowed=Run in a window instead of full screen (full screen is little tested with the mod)
 en.Building=Building HotlineMiami_Coop.exe from your game copy (about a minute)...
 en.BuildFailed=Could not build the co-op game. The original files are untouched.%n%nLog: %1%n%n%2
 en.RunGame=Start Hotline Miami Co-op
@@ -199,6 +199,7 @@ begin
   WindowedBox.Top := CharCombo.Top + CharCombo.Height + ScaleY(18);
   WindowedBox.Width := CharPage.SurfaceWidth;
   WindowedBox.Caption := CustomMessage('Windowed');
+  WindowedBox.Checked := True;
 end;
 
 // settings of an earlier install in this game folder become the defaults
