@@ -29,10 +29,11 @@
 //
 // Steam: with Steam running, the game's own steam_api.dll (AppID 219150) is used as a second transport
 // next to UDP. Players with the same room code find each other through a Steam lobby search (no IPs, no
-// VPN); without a room code each player sits in a friends-only lobby that Steam friends join with
-// "Join game" / an invite. Lobby members are the only Steam peers (so their packets skip the room code
-// check: someone invited may have another code); their packets go through Steam P2P
-// (relayed when a direct path fails). Packets are kept under 1200 bytes, Steam's unreliable limit.
+// VPN): the code finds the lobby, and every packet must still carry it, so a stranger who joins the
+// public lobby by its id gets nothing. Without a room code, F in the menu opens a friends-only lobby that
+// Steam friends join with "Join game" / an invite (their co-op game must already run); there the lobby is
+// the only check. Lobby members are the only Steam peers; their packets go through Steam P2P (relayed
+// when a direct path fails). Packets are kept under 1200 bytes, Steam's unreliable limit.
 
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -49,13 +50,13 @@
 #define MAGIC 0x34434D48u  /* "HMC4": state + events (carries the mod version, kept from now on) */
 #define EMAGIC 0x35454D48u /* "HME5": enemy state page */
 #define PMAGIC 0x34504D48u /* "HMP4": addresses of the other peers we know */
-#define MOD_VERSION 100    /* v1.0: compared with the peers', a difference is reported */
+#define MOD_VERSION 110    /* v1.1: compared with the peers', a difference is reported */
 #define MAXP 3             /* peers (players besides us) */
 #define ES_PAGE 40         /* enemies per enemy-state packet (1144 bytes) */
 #define ES_PAGES 5         /* -> up to 200 enemies sent */
 #define ES_MAX (ES_PAGE * ES_PAGES)
 #define EV_REL 16          /* reliable events per packet */
-#define EV_UNREL 6         /* unreliable events per packet (full packet 1184 bytes) */
+#define EV_UNREL 6         /* unreliable events per packet (full packet 1192 bytes) */
 #define EV_PER_PACKET (EV_REL + EV_UNREL)
 #define EV_QUEUE 1024
 #define UQ_MAX 128         /* unreliable events waiting for the next packets */
@@ -79,7 +80,12 @@ typedef struct {
     unsigned int session;  // random per game launch: a restarted peer resets its event streams
     unsigned int seq;
     unsigned int room;     // hash of the room code (0 = none): other codes are ignored
-    unsigned int ack_session;  // our session as the sender knows it: "ack" is about that stream only
+    // Event streams are numbered from 1 within an epoch (random id). A side that loses its receive state for
+    // a peer (slot freed and made again: lobby left / rejoined) gets a new rxi; the peer then renumbers its
+    // unacked events into a new epoch, so the streams meet at id 1 again without a restart.
+    unsigned int txe;      // epoch of the sender's event stream to us
+    unsigned int rxi;      // the sender's receive state for us (changes when it lost it)
+    unsigned int ack_txe;  // the epoch of our stream that "ack" is about
     char name[16];
     double f[NFIELDS];
     unsigned int ack;    // highest in-order event id we have delivered from this peer
@@ -116,6 +122,9 @@ typedef struct {
     struct { unsigned int ip; unsigned short port; } a[MAXP];
 } PPacket;
 #pragma pack(pop)
+// Steam's unreliable P2P packets are at most 1200 bytes
+_Static_assert(sizeof(Packet) <= 1200, "Packet too big for Steam");
+_Static_assert(sizeof(EPacket) <= 1200, "EPacket too big for Steam");
 
 typedef unsigned long long u64;
 
@@ -140,6 +149,10 @@ typedef struct {
     Event outq[EV_QUEUE];
     unsigned int out_first, out_next;
     unsigned int rx_next;     // next event id expected from this peer
+    unsigned int out_epoch;   // epoch of our stream to this peer (txe)
+    unsigned int my_rxi;      // our receive state for this peer (rxi)
+    unsigned int rx_txe;      // epoch of the peer's stream we follow (0 = none yet)
+    unsigned int peer_rxi;    // the peer's rxi as last seen (0 = none yet)
     unsigned long n_overflow; // events that did not fit in outq (link too slow / peer gone)
     // enemy state from this peer, by page; a page counts while it is from one of the newest seqs
     EState es_pg[ES_PAGES][ES_PAGE];
@@ -187,7 +200,8 @@ static int n_local_ip = 0;
 
 // ---- Steam: the game's steam_api.dll (Steamworks SDK of early 2013) has C++ interfaces only; they are
 // called through their vtables (MSVC thiscall; a CSteamID result comes back through a hidden pointer).
-// Slots are those of SteamNetworking005, SteamMatchMaking009, SteamUser016, SteamUtils006, SteamFriends013.
+// Slots are those of SteamNetworking005, SteamMatchMaking009, SteamUser016, SteamUtils005, SteamFriends013
+// (the game's DLL asks for SteamUtils005; the slots used here are the same in 006, whose header was at hand).
 #define TC __attribute__((thiscall))
 #define VF(obj, i) ((*(void ***)(obj))[i])
 
@@ -212,6 +226,9 @@ static struct {
     u64 me, lobby, call, join_req;
     int call_kind;         // the pending call: 1 lobby search, 2 create, 3 join
     int stale;             // the room code changed while it was pending: its lobby is not ours
+    DWORD call_t;          // when it was made (a call Steam never finishes is dropped)
+    int friends;           // no room code: a friends-only lobby is open (F in the menu opens it)
+    int miss;              // syncs in a row that did not list us in our lobby
     DWORD next_search, next_sync;
     u64 members[MAXP + 1]; // our lobby, us included
     int nmembers;
@@ -220,7 +237,7 @@ static struct {
     char key[12];          // lobby data "hmroom", from the room code ("" = no code: friends-only lobby)
     char state[96];
     int selftest;          // HMNET_STEAM_SELF=1: our own SteamID counts as a peer (two games, one account)
-} st = {1};
+} st = {.want = 1};
 
 static void st_key(void);
 
@@ -240,10 +257,13 @@ static int st_send(u64 sid, const void *buf, int len) {
 static int st_recv(void *buf, int size, u64 *from) {
     unsigned int n = 0;
     if (!((unsigned char(TC *)(void *, unsigned int *, int))VF(st.net, 1))(st.net, &n, 0)) return 0;
-    static char junk[8192];
+    // a packet bigger than ours (not from this mod) is read whole and dropped, or it would block the queue
     int big = (int)n > size;
+    void *dst = big ? malloc(n) : buf;
+    if (!dst) return -1;
     ((unsigned char(TC *)(void *, void *, unsigned int, unsigned int *, u64 *, int))VF(st.net, 2))(
-        st.net, big ? junk : buf, big ? sizeof junk : (unsigned int)size, &n, from, 0);
+        st.net, dst, big ? n : (unsigned int)size, &n, from, 0);
+    if (big) free(dst);
     return big ? -1 : (int)n;
 }
 
@@ -445,9 +465,25 @@ static int same_addr(const Addr *a, const Addr *b) {
     return a->in.sin_addr.s_addr == b->in.sin_addr.s_addr && a->in.sin_port == b->in.sin_port;
 }
 
+// random non-zero id for epochs
+static unsigned int new_id(void) {
+    static unsigned int x = 0;
+    LARGE_INTEGER q;
+    QueryPerformanceCounter(&q);
+    x ^= q.LowPart ^ (GetTickCount() << 7) ^ out.session;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return x ? x : 1;
+}
+
 static void reset_streams(Peer *p) {
     p->out_first = p->out_next = 1;
     p->rx_next = 1;
+    p->out_epoch = new_id();
+    p->my_rxi = new_id();
+    p->rx_txe = 0;
+    p->peer_rxi = 0;
     p->have_in = 0;
     p->es_have = 0;
     p->es_npages = 0;
@@ -465,9 +501,47 @@ static void reset_streams(Peer *p) {
     in_count = k;
 }
 
+// streams of freed slots, kept a minute: a player who comes back in that time (same session: Steam lobby
+// left and joined again, a slot reused) goes on where it stopped, so nothing is lost or delivered twice
+#define GRAVE_KEEP 60000
+static struct { Peer p; DWORD t; int used; } grave[MAXP];
+
 static void free_slot(Peer *p) {
+    if (p->used && p->have_in && p->session) {
+        int g = -1;
+        for (int i = 0; i < MAXP && g < 0; i++)
+            if (!grave[i].used) g = i;
+        if (g < 0) {  // all kept: replace the oldest
+            g = 0;
+            for (int i = 1; i < MAXP; i++)
+                if ((int)(grave[i].t - grave[g].t) < 0) g = i;
+        }
+        grave[g].p = *p;
+        grave[g].t = GetTickCount();
+        grave[g].used = 1;
+    }
     reset_streams(p);
     p->used = 0;
+}
+
+// a new slot's first packet: the streams of this session if a freed slot had them, else a fresh start
+static void start_streams(Peer *p) {
+    for (int i = 0; i < MAXP; i++) {
+        Peer *o = &grave[i].p;
+        if (!grave[i].used || o->session != p->session || GetTickCount() - grave[i].t > GRAVE_KEEP) continue;
+        memcpy(p->outq, o->outq, sizeof p->outq);
+        p->out_first = o->out_first;
+        p->out_next = o->out_next;
+        p->rx_next = o->rx_next;
+        p->out_epoch = o->out_epoch;
+        p->my_rxi = o->my_rxi;
+        p->rx_txe = o->rx_txe;
+        p->peer_rxi = o->peer_rxi;
+        p->n_overflow = o->n_overflow;
+        grave[i].used = 0;
+        return;
+    }
+    reset_streams(p);
 }
 
 // a slot nobody is talking through: may be given to a new player when all are used
@@ -638,7 +712,9 @@ EXPORT net_send(void) {
         // nobody answers there (yet): knock a few times a second only
         if (!alive(p) && (n_send + i) % PROBE_EVERY) continue;
         out.ack = p->rx_next - 1;
-        out.ack_session = p->session;
+        out.ack_txe = p->rx_txe;
+        out.txe = p->out_epoch;
+        out.rxi = p->my_rxi;
         unsigned int n = 0;
         for (unsigned int id = p->out_first; id < p->out_next && n < EV_REL; id++, n++)
             out.ev[n] = p->outq[id % EV_QUEUE];
@@ -669,9 +745,10 @@ static void deliver(int slot, const Event *e, unsigned int session) {
 
 // acks and reliable events: from any packet of this session, late ones too (ids dedupe them)
 static void take_events(Peer *p, int slot, const Packet *pk) {
-    // peer acknowledged our events up to pk->ack (an ack about an earlier session of ours means nothing)
-    if (pk->ack_session == out.session)
+    // peer acknowledged our events up to pk->ack (an ack about another epoch of ours means nothing)
+    if (pk->ack_txe == p->out_epoch)
         while (p->out_first < p->out_next && (int)(pk->ack - p->out_first) >= 0) p->out_first++;
+    if (pk->txe != p->rx_txe) return;  // a late packet of the peer's previous epoch
     for (unsigned int k = 0; k < pk->nev; k++) {
         const Event *e = &pk->ev[k];
         if (e->id != p->rx_next) continue;  // duplicate or out of order: it will be resent
@@ -681,6 +758,32 @@ static void take_events(Peer *p, int slot, const Packet *pk) {
         p->rx_next++;
         p->poll_rel++;
         n_ev_rx++;
+    }
+}
+
+// our unacked events again from id 1, in a new epoch (the peer lost what it had from us)
+static void renumber_out(Peer *p) {
+    static Event tmp[EV_QUEUE];
+    unsigned int k = p->out_next - p->out_first;
+    for (unsigned int i = 0; i < k; i++) tmp[i] = p->outq[(p->out_first + i) % EV_QUEUE];
+    for (unsigned int i = 0; i < k; i++) {
+        tmp[i].id = i + 1;
+        p->outq[(i + 1) % EV_QUEUE] = tmp[i];
+    }
+    p->out_first = 1;
+    p->out_next = k + 1;
+    p->out_epoch = new_id();
+}
+
+// from a packet newer than any before: follow the peer's epochs
+static void sync_epochs(Peer *p, const Packet *pk) {
+    if (pk->rxi != p->peer_rxi) {
+        if (p->peer_rxi) renumber_out(p);
+        p->peer_rxi = pk->rxi;
+    }
+    if (pk->txe != p->rx_txe) {  // the peer's stream to us started again (it reset or renumbered)
+        p->rx_txe = pk->txe;
+        p->rx_next = 1;
     }
 }
 
@@ -718,7 +821,7 @@ static int handle(int n, const Addr *from) {
         Peer *p = &peers[s];
         unsigned int cnt = buf.ep.count, pg = buf.ep.page, np = buf.ep.npages;
         if (cnt > ES_PAGE || n != EP_HEAD + (int)(cnt * sizeof(EState)) || pg >= ES_PAGES || np > ES_PAGES ||
-            pg >= np || !p->have_in || buf.ep.session != p->session || (buf.ep.room != room_hash && !from->sid)) { n_bad++; return 0; }
+            pg >= np || !p->have_in || buf.ep.session != p->session || (buf.ep.room != room_hash && !(from->sid && !room_hash))) { n_bad++; return 0; }
         int newer = !p->es_have || (int)(buf.ep.seq - p->es_last_seq) > 0 || (int)(p->es_last_seq - buf.ep.seq) > 600;
         if (newer || (int)(buf.ep.seq - p->es_pg_seq[pg]) > 0) {
             memcpy(p->es_pg[pg], buf.ep.e, cnt * sizeof(EState));
@@ -748,9 +851,9 @@ static int handle(int n, const Addr *from) {
     if (magic != MAGIC || n < PK_HEAD || buf.p.nev > EV_REL || buf.p.nuev > EV_UNREL ||
         n != PK_HEAD + (int)((buf.p.nev + buf.p.nuev) * sizeof(Event))) { n_bad++; return 0; }
     if (buf.p.session == out.session) return 0;  // our own packet (we are listed as a peer)
-    // another room code: not one of our players. Steam peers are in our lobby: the lobby is the check (a
-    // friend who joined through an invite may have another code or none)
-    if (buf.p.room != room_hash && !from->sid) {
+    // another room code: not one of our players. Without a code of our own a Steam peer is checked by the
+    // lobby only (a friend who joined from Steam may have any code); with one, a Steam peer needs it too
+    if (buf.p.room != room_hash && !(from->sid && !room_hash)) {
         if (!is_self(from)) {
             wrongroom.addr = *from;
             wrongroom.t = GetTickCount();
@@ -758,7 +861,8 @@ static int handle(int n, const Addr *from) {
         }
         return 0;
     }
-    int s = slot_for(from, 1);
+    // Steam peers get their slot from the lobby sync only (a second route must not take a UDP slot)
+    int s = slot_for(from, from->sid ? 0 : 1);
     if (s < 0) return 0;  // all slots taken
     Peer *p = &peers[s];
     // the same player known under another address: while it still talks from there, this is a
@@ -782,13 +886,15 @@ static int handle(int n, const Addr *from) {
         break;
     }
     if (!p) return 0;
-    if (buf.p.session != p->session) {  // peer (re)started: both event streams begin again at id 1
+    if (buf.p.session != p->session) {  // new or (re)started peer: both event streams begin again at id 1
         p->session = buf.p.session;
-        reset_streams(p);
+        start_streams(p);
     }
     p->n_rx++;
+    int fresh = !p->have_in || (int)(buf.p.seq - p->last_seq) > 0 || (int)(p->last_seq - buf.p.seq) >= 600;
+    if (fresh) sync_epochs(p, &buf.p);
     take_events(p, s, &buf.p);
-    if (p->have_in && (int)(buf.p.seq - p->last_seq) <= 0 && (int)(p->last_seq - buf.p.seq) < 600) return 0;  // stale
+    if (!fresh) return 0;  // stale
     take_unreliable(p, s, &buf.p);
     memcpy(&p->in, &buf.p, sizeof p->in);
     p->last_seq = buf.p.seq;
@@ -817,6 +923,7 @@ static void st_join(u64 lobby) {
     st_leave();
     st.call = ((u64(TC *)(void *, u64))VF(st.mm, 14))(st.mm, lobby);  // JoinLobby
     st.call_kind = 3;
+    st.call_t = GetTickCount();
     strcpy(st.state, "joining a lobby");
 }
 
@@ -826,6 +933,7 @@ static void st_search(void) {
     ((void(TC *)(void *, int))VF(st.mm, 9))(st.mm, 3);  // worldwide
     st.call = ((u64(TC *)(void *))VF(st.mm, 4))(st.mm);  // RequestLobbyList
     st.call_kind = 1;
+    st.call_t = GetTickCount();
     if (!st.lobby) snprintf(st.state, sizeof st.state, "looking for room \"%s\"", room_code);
 }
 
@@ -833,6 +941,7 @@ static void st_create(void) {
     // public when there is a room code (found by the search), else friends only (joined from Steam)
     st.call = ((u64(TC *)(void *, int, int))VF(st.mm, 13))(st.mm, st.key[0] ? 2 : 1, MAXP + 1);
     st.call_kind = 2;
+    st.call_t = GetTickCount();
     strcpy(st.state, "making a lobby");
 }
 
@@ -847,12 +956,25 @@ static void st_sync(void) {
     DWORD now = GetTickCount();
     int n = st.lobby ? ((int(TC *)(void *, u64))VF(st.mm, 17))(st.mm, st.lobby) : 0;
     st.nmembers = 0;
+    int in = 0;
     for (int i = 0; i < n && st.nmembers < MAXP + 1; i++) {
         u64 m = st_member(st.lobby, i);
         if (m) st.members[st.nmembers++] = m;
+        if (m == st.me) in = 1;
     }
+    // dropped from the lobby (Steam lost its connection): find / make one again
+    if (st.lobby && !in && ++st.miss >= 4) {
+        st.lobby = 0;
+        st.nmembers = 0;
+        st.miss = 0;
+        st.next_search = now;
+        strcpy(st.state, "lost the lobby, looking again");
+    } else if (in) st.miss = 0;
     for (int i = 0; i < MAXP; i++)
-        if (peers[i].used && peers[i].addr.sid && !st_is_member(peers[i].addr.sid)) free_slot(&peers[i]);
+        if (peers[i].used && peers[i].addr.sid && !st_is_member(peers[i].addr.sid)) {
+            ((unsigned char(TC *)(void *, u64))VF(st.net, 4))(st.net, peers[i].addr.sid);  // CloseP2PSessionWithUser
+            free_slot(&peers[i]);
+        }
     for (int k = 0; k < st.nmembers; k++) {
         u64 m = st.members[k];
         if (m == st.me && !st.selftest) continue;
@@ -867,16 +989,31 @@ static void st_sync(void) {
         peers[s].configured = 1;
         ((unsigned char(TC *)(void *, u64))VF(st.net, 3))(st.net, m);  // AcceptP2PSessionWithUser
     }
+    // in the lobby is not connected yet: count the members we really hear
+    int conn = 0;
+    for (int i = 0; i < MAXP; i++)
+        if (peers[i].used && peers[i].addr.sid && alive(&peers[i])) conn++;
     if (st.lobby) {
-        if (st.key[0]) snprintf(st.state, sizeof st.state, "room \"%s\", %d of 4 in the lobby", room_code, st.nmembers);
-        else snprintf(st.state, sizeof st.state, "Steam lobby, %d of 4 (friends join from Steam)", st.nmembers);
-    }
+        char who[48];
+        if (st.nmembers <= 1) strcpy(who, "nobody else yet");
+        else snprintf(who, sizeof who, "%d connected of %d", conn, st.nmembers - 1);
+        if (st.key[0]) snprintf(st.state, sizeof st.state, "room \"%s\": %s", room_code, who);
+        else snprintf(st.state, sizeof st.state, "open for Steam friends: %s", who);
+    } else if (!st.call && !st.key[0] && !st.friends)
+        strcpy(st.state, "ready, no room code");
 }
 
 static void st_tick(void) {
     if (!st.ok) return;
     DWORD now = GetTickCount();
     st.run_callbacks();
+    if (st.call && now - st.call_t > 15000) {  // Steam never answered: forget the call, try again
+        st.call = 0;
+        st.call_kind = 0;
+        st.stale = 0;
+        st.next_search = now;
+        strcpy(st.state, "Steam does not answer, trying again");
+    }
     if (st.call) {
         unsigned char failed = 0;
         if (((unsigned char(TC *)(void *, u64, unsigned char *))VF(st.utl, 11))(st.utl, st.call, &failed)) {
@@ -897,7 +1034,10 @@ static void st_tick(void) {
                 kind = 0;
                 st.next_search = now;
             }
-            if (kind == 1) {
+            if (kind == 1 && !ok) {  // the search failed (not "nothing found"): search again, make nothing
+                strcpy(st.state, "lobby search failed, trying again");
+                st.next_search = now + 3000;
+            } else if (kind == 1) {
                 // join the fullest lobby of our room (then the lowest id); when we sit alone in ours, move to
                 // one with players or an older one, so two players who made lobbies at once end up together
                 u64 best = 0;
@@ -938,7 +1078,8 @@ static void st_tick(void) {
             st.join_req = 0;
             if (l != st.lobby) st_join(l);
         } else if (!st.lobby && (int)(now - st.next_search) >= 0) {
-            if (st.key[0]) st_search(); else st_create();
+            if (st.key[0]) st_search();
+            else if (st.friends) st_create();
         } else if (st.lobby && st.key[0] && st.nmembers <= 1 && (int)(now - st.next_search) >= 0) st_search();
     }
     if ((int)(now - st.next_sync) >= 0) {
@@ -1197,9 +1338,15 @@ __declspec(dllexport) const char *__cdecl net_status(void) {
 __declspec(dllexport) const char *__cdecl net_steam_state(void) { return st.state; }
 // 1 when Steam is up, 0 when not (steam=0, no Steam, not the Steam game)
 EXPORT net_steam(void) { return st.ok; }
-// Steam's invite dialog for our lobby: 1 shown, 0 no overlay (game not started from Steam), -1 no Steam/lobby
+// F in the menu: without a room code it opens a friends-only lobby first; then Steam's invite dialog.
+// 1 dialog shown, 0 lobby open (or opening) but no overlay (game not started from Steam), -1 no Steam
 EXPORT net_steam_invite(void) {
-    if (!st.ok || !st.lobby) return -1;
+    if (!st.ok) return -1;
+    if (!st.key[0] && !st.friends) {
+        st.friends = 1;
+        st.next_search = GetTickCount();
+    }
+    if (!st.lobby) return 0;
     if (!((unsigned char(TC *)(void *))VF(st.utl, 17))(st.utl)) return 0;  // IsOverlayEnabled
     ((void(TC *)(void *, u64))VF(st.fr, 26))(st.fr, st.lobby);  // ActivateGameOverlayInviteDialog
     return 1;
@@ -1221,11 +1368,14 @@ EXPORT net_set_peer(const char *list) {
 }
 // room code changed in the in-game menu (players with the old code drop out after a few seconds)
 EXPORT net_set_room(const char *code) {
+    unsigned int before = room_hash;
     room_hash = room_of(code);
     out.room = room_hash;
     strncpy(room_code, code, sizeof room_code - 1);
     room_code[sizeof room_code - 1] = 0;
-    if (st.ok) {  // to the lobby of the new code (or a friends-only one)
+    // the same code written otherwise ("Lab" / "lab ") is the same room: stay
+    if (st.ok && room_hash != before) {  // to the lobby of the new code (none without a code until F)
+        st.friends = 0;
         st_key();
         st_leave();
         st.stale = st.call != 0;  // a pending call ends first, then the search starts over
@@ -1233,6 +1383,13 @@ EXPORT net_set_room(const char *code) {
         st.next_sync = 0;
     }
     return room_hash != 0;
+}
+// test aid: mode 0 frees a slot (its peer comes back into a new one), mode 1 loses its streams outright
+EXPORT net_test_reset(double slot, double mode) {
+    int s = (int)slot;
+    if (s < 0 || s >= MAXP || !peers[s].used) return 0;
+    if (mode == 0) free_slot(&peers[s]); else reset_streams(&peers[s]);
+    return 1;
 }
 EXPORT net_set_name(const char *name) {
     strncpy(out.name, name, 15);

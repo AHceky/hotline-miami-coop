@@ -301,7 +301,7 @@ partner is streamed over UDP and drawn as a ghost in your level. Later: kill syn
 ## v1.0 (play through Steam)
 - hmnet.dll loads the game's own steam_api.dll (SDK of early 2013, AppID 219150) and calls its C++ interfaces
   through their vtables (thiscall; CSteamID results through a hidden pointer). Slots checked against the
-  source-sdk-2013 headers of June 2013 (SteamMatchMaking009, SteamNetworking005, SteamUser016, SteamUtils006,
+  source-sdk-2013 headers of June 2013 (SteamMatchMaking009, SteamNetworking005, SteamUser016, SteamUtils005 (header of 006: same slots),
   SteamFriends013) and by net/steam_probe.c in a lab: init (twice is fine), own SteamID, lobby create / data /
   members / owner, worldwide lobby search, P2P send to ourselves.
 - Steam is a second transport next to UDP (Addr = sockaddr or SteamID). With a room code: lobby search on
@@ -323,3 +323,29 @@ partner is streamed over UDP and drawn as a ghost in your level. Later: kill syn
   lobby, connected, chapter 1 enemies owned/puppeted, kills and F9 consistent; +connect_lobby joins the given lobby;
   different codes -> separate lobbies.
 - Not verified: two real Steam accounts, the overlay invite dialog, Steam not running.
+
+## v1.1 (fixes from a review of v1.0)
+- Event streams survive a slot being freed and made again (Steam lobby left / rejoined, a slot reused). Before,
+  the side that remade the slot started at id 1 while the other went on at N: events were dropped for good and the
+  sender's queue overflowed. Now packets carry txe (epoch of the sender's stream to us), rxi (the sender's receive
+  state for us) and ack_txe (the epoch the ack is about; replaces ack_session). A freed slot's streams are kept a
+  minute and given back to the same session (nothing lost or doubled); a side that really lost its receive state
+  gets a new rxi and the peer renumbers its unacked events from 1 in a new epoch. PK_HEAD 312, full packet 1192.
+  test_hmnet: slots freed and remade on one side -> 300 events each way in order; streams lost outright -> events
+  flow again (0-40 % loss). The test now tells senders by their state (slots change when remade).
+- Steam lobby: we are checked to still be in our lobby (dropped -> search again after 4 syncs); a failed search
+  searches again instead of making a lobby; a call Steam never finishes is dropped after 15 s; members that leave
+  get CloseP2PSessionWithUser; packets of Steam peers only use slots made by the lobby sync; an oversized P2P
+  packet is read whole and dropped. Status shows "N connected of M" (heard, not just in the lobby).
+- Without a room code no lobby is made until F (before, every player sat in a friends-only lobby that any
+  friend with the mod could walk into). With a room code, Steam peers' packets must carry it too: a stranger
+  who joins the public lobby by its id gets nothing; only the friends-only lobby relies on membership.
+- The same code written otherwise (case, spaces) keeps the lobby. Texts: F explains that the friend's co-op game
+  must already run (Steam's Join on a closed game starts the normal HM, through the HotlineLauncher), the K prompt
+  asks for an unusual word, the installer page puts Steam first. Uninstall removes steam_appid.txt only if the
+  installer made it (hmcoop_appid.txt marker). _Static_assert on packet sizes; tools/echo_peer.py on the new layout.
+- Known: Steam peers and Radmin peers do not learn of each other (addresses are only gossiped over UDP): with 3-4
+  players mixing both, everyone needs a direct route to everyone. objLevelComplete "Failed to access attribute"
+  after a debug jump + F9 is global.barehanded unset by the jump (debug only, like the music error).
+- Verified in labs (one Steam account, HMNET_STEAM_SELF=1): room search -> one lobby, connected, chapter 1
+  kills/F9 consistent; no code -> "ready, no room code" and no lobby.

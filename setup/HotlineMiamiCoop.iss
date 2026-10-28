@@ -4,7 +4,7 @@
 ; asks for the game folder, name, other players' IPs and character, then runs
 ; tools\install.py --batch, which builds HotlineMiami_Coop.exe from the player's own game copy.
 
-#define AppVer "1.0"
+#define AppVer "1.1"
 
 [Setup]
 AppId={{27CF4983-360A-4E43-ABD7-2843BE075C18}
@@ -54,7 +54,7 @@ ru.GameDesc=Установщик соберёт кооп-версию HotlineMia
 ru.GameNotFound=В этой папке нет HotlineMiami_Original.exe. Укажи папку hotline_miami из Steam.
 ru.PlayerTitle=Ты и другие игроки
 ru.PlayerSub=Имя над головой и адреса других игроков в Radmin VPN
-ru.PlayerDesc=До 4 игроков. IP - адрес вида 26.x.x.x рядом с ником в Radmin VPN; достаточно вписать одного игрока, остальных игра найдёт сама. Код комнаты - одно слово, одинаковое у всех: без него к вам может подключиться любой, кто найдёт ваш адрес. С запущенным Steam игра сама находит игроков с тем же кодом комнаты, Radmin не нужен (или друг заходит через Steam: «Присоединиться к игре»). Всё это можно поменять и в меню игры (N, I, K, F).
+ru.PlayerDesc=До 4 игроков. Через Steam: запустите Steam и впишите всем один и тот же код комнаты (необычное слово: кто введёт тот же код, попадёт к вам) - игра сама найдёт остальных, IP не нужны. Или без кода: F в меню игры открывает лобби для друзей Steam, друг жмёт «Присоединиться к игре» (его кооп-игра уже должна быть запущена). Через Radmin VPN: IP вида 26.x.x.x рядом с ником, достаточно одного игрока. Всё это можно поменять и в меню игры (N, I, K, F).
 ru.NameLabel=Твоё имя (латиницей, до 15 символов):
 ru.PeerLabel=IP других игроков (через запятую):
 ru.RoomLabel=Код комнаты (латиница и цифры, одинаковый у всех; можно пусто):
@@ -73,7 +73,7 @@ en.GameDesc=The installer builds the co-op HotlineMiami_Coop.exe from your own g
 en.GameNotFound=This folder has no HotlineMiami_Original.exe. Choose the hotline_miami folder from Steam.
 en.PlayerTitle=You and the other players
 en.PlayerSub=Name above your head and the other players' Radmin VPN addresses
-en.PlayerDesc=Up to 4 players. The IP is the 26.x.x.x address next to the nickname in Radmin VPN; one player is enough, the game finds the others. The room code is one word, the same for everyone: without it anybody who finds your address can join. With Steam running, the game finds the players with the same room code by itself, no Radmin needed (or a friend joins from Steam: Join Game). All of this can be changed in the game menu too (N, I, K, F).
+en.PlayerDesc=Up to 4 players. Through Steam: start Steam and give everyone the same room code (an unusual word: whoever types the same code joins you) - the game finds the others by itself, no IPs. Or without a code: F in the game menu opens a lobby for Steam friends, a friend clicks Join Game (their co-op game must already run). Over Radmin VPN: the 26.x.x.x IP next to the nickname, one player is enough. All of this can be changed in the game menu too (N, I, K, F).
 en.NameLabel=Your name (latin letters, up to 15):
 en.PeerLabel=Other players' IPs (comma separated):
 en.RoomLabel=Room code (latin letters and digits, the same for everyone; may be empty):

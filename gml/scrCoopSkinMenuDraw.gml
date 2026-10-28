@@ -17,7 +17,7 @@ m0="CHARACTER: "+string_upper(scrCoopSkinName(global.coop_skin))+"   (C - CHANGE
 m1="NAME: "+string_upper(global.coop_name)+" (N)    PLAYERS: "+global.coop_peerstr+" (I)"
 m2="YOUR RADMIN / LAN IP: "+loc
 if global.coop_room="" m3="ROOM CODE: NONE (K)" else m3="ROOM CODE: "+string_upper(global.coop_room)+" (K)"
-if external_call(global.__net_steam) m4="STEAM: "+string_upper(external_call(global.__net_steam_state))+"   (F - INVITE FRIENDS)"
+if external_call(global.__net_steam) m4="STEAM: "+string_upper(external_call(global.__net_steam_state))+"   (F - STEAM FRIENDS)"
 else m4="STEAM: "+string_upper(external_call(global.__net_steam_state))
 draw_set_color(c_black)
 draw_text(px+25,py-7,m0)

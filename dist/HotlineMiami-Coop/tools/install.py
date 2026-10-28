@@ -303,8 +303,14 @@ def main():
             p = os.path.join(game, f)
             if os.path.exists(p):
                 os.remove(p)
-        print(T('Мод удалён (hmcoop.txt оставлен). Оригинальная игра не менялась.',
-                'Mod removed (hmcoop.txt kept). The original game was not changed.'))
+        # steam_appid.txt only if the installer made it (the marker says so)
+        mark = os.path.join(game, 'hmcoop_appid.txt')
+        if os.path.exists(mark):
+            os.remove(mark)
+            if os.path.exists(os.path.join(game, 'steam_appid.txt')):
+                os.remove(os.path.join(game, 'steam_appid.txt'))
+        print(T('Мод удалён (hmcoop.txt оставлен). Файлы оригинальной игры не менялись.',
+                'Mod removed (hmcoop.txt kept). The original game files were not changed.'))
         return 0
 
     hm2 = find_hm2(game)
@@ -331,6 +337,8 @@ def main():
     if os.path.isfile(os.path.join(game, 'steam_api.dll')) and not os.path.isfile(appid):
         with open(appid, 'w') as f:
             f.write('219150')
+        with open(os.path.join(game, 'hmcoop_appid.txt'), 'w') as f:
+            f.write('steam_appid.txt was made by the co-op installer; the uninstaller removes both.\n')
     cfg = os.path.join(game, 'hmcoop.txt')
     if BATCH:
         configure_batch(cfg, bool(hm2))

@@ -26,7 +26,7 @@ typedef struct {
     FS start;
     F0 send, poll, ev_count, ev_pop, age, es_begin, es_send, mismatch, overflow;
     F1 sel, ev_get, get;
-    F2 set, es_get, es_by;
+    F2 set, es_get, es_by, test_reset;
     F5 event4, uevent4;
     F8 es_add;
 } Net;
@@ -46,7 +46,7 @@ static void load(Net *n, const char *dir, int k) {
     G(ev_pop, "net_ev_pop"); G(age, "net_age"); G(es_begin, "net_es_begin"); G(es_send, "net_es_send");
     G(mismatch, "net_version_mismatch"); G(overflow, "net_overflow"); G(sel, "net_sel"); G(ev_get, "net_ev_get");
     G(get, "net_get"); G(set, "net_set"); G(es_get, "net_es_get"); G(es_by, "net_es_by"); G(event4, "net_event4");
-    G(uevent4, "net_uevent4"); G(es_add, "net_es_add");
+    G(uevent4, "net_uevent4"); G(es_add, "net_es_add"); G(test_reset, "net_test_reset");
 }
 
 static void cfg(Net *n, int k, const char *peers, const char *room) {
@@ -68,6 +68,10 @@ static void step(int nn) {
         n->poll();
         while (n->ev_count() > 0) {
             int type = (int)n->ev_get(0), a = (int)n->ev_get(1), from = (int)n->ev_get(5);
+            // the sender by who it is (state field 2 = 100 + player), not by slot: slots change when remade
+            n->sel(from);
+            int who = (int)n->get(2) - 100;
+            if (who >= 0 && who < 4) from = who;
             if (type == 1) {
                 if (a != next_rel[i][from]) rel_bad++;
                 next_rel[i][from] = a + 1;
@@ -120,7 +124,7 @@ int main(int argc, char **argv) {
     CHECK(all, "mesh of 4 formed (typo slot reused) after %d steps", t);
     if (!all) for (int k = 0; k < 4; k++) printf("        player %d sees %d\n", k, connected(&net[k], 3));
 
-    // the sender's slot number differs on each receiver: count per slot
+    // counted per sender
     memset(next_rel, 0, sizeof next_rel);
     // reliable: 1500 events from player 0, 10 a step; unreliable: 1500 from player 1
     int sent = 0, usent = 0;
@@ -152,6 +156,53 @@ int main(int argc, char **argv) {
     }
     CHECK(urel_dup == 0, "unreliable: no duplicates (%d)", urel_dup);
     CHECK(net[0].overflow() == 0, "no event queue overflow");
+
+    // a player's slots are freed and made again (Steam lobby left and joined again) while the others go on:
+    // the streams go on where they were, in order. Then player 0 loses its streams outright: events must flow
+    // again without a restart (a few delivered but not yet acked may come twice).
+    for (int phase = 0; phase < 2; phase++) {
+        Net *r = &net[phase == 0 ? 1 : 0];
+        int bad0 = rel_bad;
+        for (int s = 0; s < 3; s++) r->test_reset(s, phase);
+        // events are only queued for peers heard since: wait until it hears the others again
+        for (t = 0; t < 2000 && connected(r, 3) != 3; t++) step(4);
+        int base = 1500 + phase * 300, sent1 = 0;
+        sent = 0;
+        for (t = 0; t < 3000; t++) {
+            for (int j = 0; j < 10 && sent < 300; j++, sent++) net[0].event4(1, base + sent, 0, 0, 0);
+            if (phase == 0) for (int j = 0; j < 10 && sent1 < 300; j++, sent1++) net[1].event4(1, sent1, 0, 0, 0);
+            step(4);
+            int done = sent == 300;
+            for (int k = 1; k < 4; k++) {
+                int got = 0;
+                for (int s = 0; s < 3; s++) if (next_rel[k][s] > got) got = next_rel[k][s];
+                if (got < base + 300) done = 0;
+            }
+            if (phase == 0) {
+                int got = 0;
+                for (int s = 0; s < 3; s++) if (next_rel[0][s] > got && next_rel[0][s] < 1000) got = next_rel[0][s];
+                if (got < 300) done = 0;
+            }
+            if (done) break;
+        }
+        int ok = 1;
+        for (int k = 1; k < 4; k++) {
+            int got = 0;
+            for (int s = 0; s < 3; s++) if (next_rel[k][s] > got) got = next_rel[k][s];
+            if (got < base + 300) ok = 0;
+        }
+        if (phase == 0)
+            CHECK(ok && rel_bad == 0, "player 1's slots freed and made again: player 0's next 300 events arrive in order "
+                  "(out of order %d, %d steps)", rel_bad, t);
+        else
+            CHECK(ok && rel_bad - bad0 <= 12, "player 0 lost its streams: its next 300 events arrive again "
+                  "(%d repeated, %d steps)", rel_bad - bad0, t);
+        if (phase == 0) {
+            int got = 0;
+            for (int s = 0; s < 3; s++) if (next_rel[0][s] > got && next_rel[0][s] < 1000) got = next_rel[0][s];
+            CHECK(got == 300, "...and player 1's 300 events reach player 0 (%d)", got);
+        }
+    }
 
     // enemies: player 2 simulates 150
     int found = 0, by = 0;

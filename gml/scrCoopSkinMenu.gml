@@ -3,7 +3,7 @@
 //   I            the other players' Radmin / LAN IPs, comma separated (one is enough, the rest are learned)
 //   N            your name above your ghost
 //   K            room code: only players with the same code connect (empty = no code)
-//   F            Steam: invite friends to our lobby (needs the Steam overlay)
+//   F            Steam friends: opens a lobby they can join (no room code), and Steam's invite dialog if there is one
 if !instance_exists(objTitle) exit
 if global.coop_focus!=1 exit
 var d,k,i,s;
@@ -28,14 +28,14 @@ io_clear()
 }
 if keyboard_check_pressed(ord("K")) {
 io_clear()
-s=get_string("Room code (the same for every player; empty = none):",global.coop_room)
+s=get_string("Room code - the same for every player (empty = none). Pick an unusual word: anyone with the same code joins you.",global.coop_room)
 if s!=global.coop_room {global.coop_room=s external_call(global.__net_set_room,s) scrCoopSaveCfg("room",s)}
 io_clear()
 }
 if keyboard_check_pressed(ord("F")) {
 io_clear()
 i=external_call(global.__net_steam_invite)
-if i=0 show_message("The Steam overlay is not available (the game was not started from Steam).##Invite from the Steam friends list instead: right-click a friend - Invite to Game. Or set the same room code (K) on every PC: the game finds the others through Steam by that code.")
+if i=0 show_message("Your Steam friends can join you now: in the Steam friends list, right-click you - Join Game (or you: right-click them - Invite to Game).##Their co-op game must already be running: on a closed game Steam starts the normal Hotline Miami.##If you use a room code, they need the same code (K).")
 if i<0 show_message("Steam is not connected: "+external_call(global.__net_steam_state)+"##Start Steam (the game must be in your Steam library) and the co-op game again, or play over Radmin VPN (I).")
 io_clear()
 }
